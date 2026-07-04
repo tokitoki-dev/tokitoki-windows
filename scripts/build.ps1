@@ -1,0 +1,176 @@
+[CmdletBinding()]
+param(
+    [ValidateSet("build", "debug", "test", "generate", "clean", "size", "check-agent")]
+    [string]$Task = "build",
+
+    [ValidateSet("amd64", "arm64")]
+    [string]$Arch = "amd64",
+
+    [string]$Version = "0.1.0",
+    [string]$Commit = "local",
+    [string]$BuildDate = "unknown",
+    [string]$Go = "go"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $PSScriptRoot
+$App = "tracklm-windows"
+$Pkg = "./cmd/tracklm-windows"
+$DistDir = Join-Path $Root "dist"
+$Manifest = Join-Path $Root "cmd/tracklm-windows/tracklm-windows.exe.manifest"
+$ResourcesGo = Join-Path $Root "cmd/tracklm-windows/resources.go"
+$AgentMod = Join-Path $Root "../tracklm-goagent/go.mod"
+$VersionPkg = "github.com/labx/tracklm-windows/internal/version"
+
+function Stop-Build {
+    param(
+        [string]$Message,
+        [int]$Code = 1
+    )
+
+    [Console]::Error.WriteLine($Message)
+    exit $Code
+}
+
+function Invoke-Checked {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Build "$FilePath failed with exit code $LASTEXITCODE" $LASTEXITCODE
+    }
+}
+
+function Assert-Agent {
+    if (-not (Test-Path -LiteralPath $AgentMod -PathType Leaf)) {
+        Stop-Build "Missing ../tracklm-goagent. Put tracklm-goagent next to tracklm-windows or publish the module and remove the replace directive."
+    }
+}
+
+function Ensure-Dist {
+    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+}
+
+function Get-ResourcePath {
+    param([string]$TargetArch)
+    Join-Path $Root "cmd/tracklm-windows/rsrc_windows_$TargetArch.syso"
+}
+
+function Ensure-Resource {
+    param([string]$TargetArch)
+
+    $resource = Get-ResourcePath -TargetArch $TargetArch
+    $needsGenerate = -not (Test-Path -LiteralPath $resource -PathType Leaf)
+
+    if (-not $needsGenerate) {
+        $resourceTime = (Get-Item -LiteralPath $resource).LastWriteTimeUtc
+        foreach ($source in @($Manifest, $ResourcesGo)) {
+            if ((Get-Item -LiteralPath $source).LastWriteTimeUtc -gt $resourceTime) {
+                $needsGenerate = $true
+                break
+            }
+        }
+    }
+
+    if ($needsGenerate) {
+        Invoke-Checked $Go @(
+            "run", "github.com/akavel/rsrc@latest",
+            "-arch", $TargetArch,
+            "-manifest", $Manifest,
+            "-o", $resource
+        )
+    }
+}
+
+function Get-LdFlags {
+    param([switch]$Debug)
+
+    $flags = @(
+        "-X", "$VersionPkg.Version=$Version",
+        "-X", "$VersionPkg.Commit=$Commit",
+        "-X", "$VersionPkg.BuildDate=$BuildDate"
+    )
+
+    if (-not $Debug) {
+        $flags = @("-s", "-w", "-H", "windowsgui") + $flags
+    }
+
+    $flags -join " "
+}
+
+function Build-App {
+    param([switch]$Debug)
+
+    Assert-Agent
+    Ensure-Resource -TargetArch $Arch
+    Ensure-Dist
+
+    $env:GOOS = "windows"
+    $env:GOARCH = $Arch
+    $env:CGO_ENABLED = "0"
+
+    if ($Debug) {
+        $out = Join-Path $DistDir "$App-$Arch-debug.exe"
+    } else {
+        $out = Join-Path $DistDir "$App-$Arch.exe"
+    }
+
+    Invoke-Checked $Go @(
+        "build",
+        "-ldflags", (Get-LdFlags -Debug:$Debug),
+        "-o", $out,
+        $Pkg
+    )
+
+    if (-not $Debug -and $Arch -eq "amd64") {
+        Copy-Item -Force -LiteralPath $out -Destination (Join-Path $DistDir "$App.exe")
+    }
+}
+
+function Generate-Resources {
+    foreach ($targetArch in @("amd64", "arm64")) {
+        $resource = Get-ResourcePath -TargetArch $targetArch
+        Invoke-Checked $Go @(
+            "run", "github.com/akavel/rsrc@latest",
+            "-arch", $targetArch,
+            "-manifest", $Manifest,
+            "-o", $resource
+        )
+    }
+}
+
+Push-Location $Root
+try {
+    switch ($Task) {
+        "build" {
+            Build-App
+        }
+        "debug" {
+            Build-App -Debug
+        }
+        "test" {
+            Assert-Agent
+            Invoke-Checked $Go @("test", "./...")
+        }
+        "generate" {
+            Generate-Resources
+        }
+        "clean" {
+            Remove-Item -Recurse -Force -LiteralPath $DistDir -ErrorAction SilentlyContinue
+        }
+        "size" {
+            Build-App
+            Get-Item -LiteralPath (Join-Path $DistDir "$App-$Arch.exe") | Select-Object FullName, Length
+        }
+        "check-agent" {
+            Assert-Agent
+        }
+    }
+} finally {
+    Pop-Location
+}

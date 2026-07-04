@@ -73,8 +73,21 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	if err := notifyIcon.SetVisible(true); err != nil {
 		return err
 	}
+	showStartupUI(mainWindow, notifyIcon, trayApp, logger)
+
 	mainWindow.Run()
 	return nil
+}
+
+func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) {
+	if _, err := trayApp.APIKey(); errors.Is(err, agentlib.ErrMissingAPIKey) {
+		_ = notifyIcon.ShowInfo("TokiToki setup required", "Paste your API key to start syncing.")
+		showSettings(owner, trayApp)
+		return
+	} else if err != nil {
+		logger.Warn("check api key", "error", err)
+		_ = notifyIcon.ShowWarning("TokiToki setup check failed", truncateStatus(err.Error()))
+	}
 }
 
 func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) error {

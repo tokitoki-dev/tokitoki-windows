@@ -10,11 +10,22 @@ import (
 	"syscall"
 
 	"github.com/labx/tracklm-windows/internal/app"
+	"github.com/labx/tracklm-windows/internal/instance"
 	"github.com/labx/tracklm-windows/internal/ui"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	lock, acquired, err := instance.Acquire()
+	if err != nil {
+		logger.Error("acquire instance lock", "error", err)
+		os.Exit(1)
+	}
+	if !acquired {
+		return
+	}
+	defer lock.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
