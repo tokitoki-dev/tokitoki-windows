@@ -13,7 +13,7 @@ func TestStoreDefaultsWhenFileMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got.EnabledProviders, []string{"claude", "codex"}) {
+	if !reflect.DeepEqual(got.EnabledProviders, KnownProviders()) {
 		t.Fatalf("EnabledProviders = %v, want defaults", got.EnabledProviders)
 	}
 }

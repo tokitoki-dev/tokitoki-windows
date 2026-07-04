@@ -12,26 +12,21 @@ import (
 
 // Directories contains selected provider directories.
 type Directories struct {
-	ClaudeDir string
-	CodexDir  string
+	ProviderDirs map[agentlib.Provider][]string
 }
 
 // SyncOptions converts Directories into agentlib sync options.
 func (d Directories) SyncOptions() agentlib.SyncOptions {
-	return agentlib.SyncOptions{
-		ClaudeDir: d.ClaudeDir,
-		CodexDir:  d.CodexDir,
-	}
+	return agentlib.SyncOptions{ProviderDirs: d.ProviderDirs}
 }
 
 // Resolve returns existing provider directories for providers.
 func Resolve(providers []string) Directories {
-	var dirs Directories
-	if contains(providers, "claude") {
-		dirs.ClaudeDir = firstExistingDir(claudePaths())
-	}
-	if contains(providers, "codex") {
-		dirs.CodexDir = firstExistingDir(codexPaths())
+	dirs := Directories{ProviderDirs: make(map[agentlib.Provider][]string)}
+	for _, provider := range providers {
+		if path := firstExistingPath(paths(provider)); path != "" {
+			dirs.ProviderDirs[agentlib.Provider(provider)] = []string{path}
+		}
 	}
 	return dirs
 }
@@ -41,8 +36,8 @@ func WatchPaths(providers []string) []string {
 	seen := map[string]bool{}
 	for _, provider := range providers {
 		for _, path := range paths(provider) {
-			if isExistingDir(path) {
-				seen[path] = true
+			if dir := existingWatchDir(path); dir != "" {
+				seen[dir] = true
 			}
 		}
 	}
@@ -61,6 +56,20 @@ func paths(provider string) []string {
 		return claudePaths()
 	case "codex":
 		return codexPaths()
+	case "copilot":
+		return copilotPaths()
+	case "gemini":
+		return geminiPaths()
+	case "kimi":
+		return kimiPaths()
+	case "qwen":
+		return qwenPaths()
+	case "openclaw":
+		return openClawPaths()
+	case "pi":
+		return piPaths()
+	case "amp":
+		return ampPaths()
 	default:
 		return nil
 	}
@@ -90,6 +99,88 @@ func codexPaths() []string {
 	return []string{filepath.Join(home, ".codex")}
 }
 
+func copilotPaths() []string {
+	if configured := os.Getenv("COPILOT_OTEL_FILE_EXPORTER_PATH"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".copilot", "otel")}
+}
+
+func geminiPaths() []string {
+	if configured := os.Getenv("GEMINI_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".gemini", "tmp")}
+}
+
+func kimiPaths() []string {
+	if configured := os.Getenv("KIMI_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".kimi")}
+}
+
+func qwenPaths() []string {
+	if configured := os.Getenv("QWEN_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".qwen")}
+}
+
+func openClawPaths() []string {
+	if configured := os.Getenv("OPENCLAW_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".openclaw"),
+		filepath.Join(home, ".clawdbot"),
+		filepath.Join(home, ".moltbot"),
+		filepath.Join(home, ".moldbot"),
+	}
+}
+
+func piPaths() []string {
+	if configured := os.Getenv("PI_AGENT_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".pi", "agent", "sessions")}
+}
+
+func ampPaths() []string {
+	if configured := os.Getenv("AMP_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".local", "share", "amp")}
+}
+
 func splitConfiguredDirs(value string, trimProjects bool) []string {
 	rawParts := strings.Split(value, ",")
 	paths := make([]string, 0, len(rawParts))
@@ -106,25 +197,26 @@ func splitConfiguredDirs(value string, trimProjects bool) []string {
 	return paths
 }
 
-func firstExistingDir(paths []string) string {
+func firstExistingPath(paths []string) string {
 	for _, path := range paths {
-		if isExistingDir(path) {
+		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
 	return ""
 }
 
-func isExistingDir(path string) bool {
+func existingWatchDir(path string) string {
 	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func contains(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
+	if err != nil {
+		return ""
 	}
-	return false
+	if info.IsDir() {
+		return path
+	}
+	dir := filepath.Dir(path)
+	if dirInfo, err := os.Stat(dir); err == nil && dirInfo.IsDir() {
+		return dir
+	}
+	return ""
 }

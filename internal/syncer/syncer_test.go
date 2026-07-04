@@ -12,7 +12,9 @@ import (
 func TestSyncerCoalescesRequests(t *testing.T) {
 	client := &recordingClient{started: make(chan struct{}), release: make(chan struct{})}
 	options := func() agentlib.SyncOptions {
-		return agentlib.SyncOptions{ClaudeDir: t.TempDir()}
+		return agentlib.SyncOptions{
+			ProviderDirs: map[agentlib.Provider][]string{agentlib.ProviderClaude: []string{t.TempDir()}},
+		}
 	}
 	syncer := New(client, options, nil)
 	ctx, cancel := context.WithCancel(context.Background())

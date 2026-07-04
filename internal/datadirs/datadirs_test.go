@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/labx/tokitoki-agent/pkg/agentlib"
 )
 
 func TestResolveUsesExistingProviderDirs(t *testing.T) {
@@ -16,11 +18,11 @@ func TestResolveUsesExistingProviderDirs(t *testing.T) {
 	}
 
 	got := Resolve([]string{"claude", "codex"})
-	if got.ClaudeDir != claude {
-		t.Fatalf("ClaudeDir = %q, want %q", got.ClaudeDir, claude)
+	if dirs := got.ProviderDirs[agentlib.ProviderClaude]; len(dirs) != 1 || dirs[0] != claude {
+		t.Fatalf("claude dirs = %v, want %q", dirs, claude)
 	}
-	if got.CodexDir != "" {
-		t.Fatalf("CodexDir = %q, want empty missing dir", got.CodexDir)
+	if dirs := got.ProviderDirs[agentlib.ProviderCodex]; len(dirs) != 0 {
+		t.Fatalf("codex dirs = %v, want empty missing dir", dirs)
 	}
 }
 
@@ -54,6 +56,23 @@ func TestClaudeConfigDirTrimsProjects(t *testing.T) {
 	got := WatchPaths([]string{"claude"})
 	if !reflect.DeepEqual(got, []string{root}) {
 		t.Fatalf("WatchPaths() = %v, want root without projects", got)
+	}
+}
+
+func TestCopilotExporterFilePathIsResolvedAndWatchedByParent(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "copilot.jsonl")
+	if err := os.WriteFile(file, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", file)
+
+	resolved := Resolve([]string{"copilot"})
+	if dirs := resolved.ProviderDirs[agentlib.ProviderCopilot]; len(dirs) != 1 || dirs[0] != file {
+		t.Fatalf("copilot dirs = %v, want exporter file", dirs)
+	}
+	if got := WatchPaths([]string{"copilot"}); !reflect.DeepEqual(got, []string{dir}) {
+		t.Fatalf("WatchPaths() = %v, want exporter parent dir", got)
 	}
 }
 

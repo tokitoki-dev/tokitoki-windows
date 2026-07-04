@@ -91,7 +91,7 @@ func (s *Syncer) loop(ctx context.Context) {
 
 func (s *Syncer) syncOnce(ctx context.Context) {
 	options := s.options()
-	if options.ClaudeDir == "" && options.CodexDir == "" {
+	if len(options.ProviderDirs) == 0 {
 		s.logger.Debug("skip sync; no existing provider directories")
 		return
 	}

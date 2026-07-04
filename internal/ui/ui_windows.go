@@ -20,6 +20,26 @@ import (
 	"github.com/lxn/win"
 )
 
+var agentOptions = []struct {
+	id    string
+	label string
+}{
+	{"claude", "Claude Code"},
+	{"codex", "Codex"},
+	{"copilot", "GitHub Copilot CLI"},
+	{"gemini", "Gemini CLI"},
+	{"kimi", "Kimi"},
+	{"qwen", "Qwen"},
+	{"openclaw", "OpenClaw"},
+	{"pi", "pi-agent"},
+	{"amp", "Amp"},
+}
+
+type providerCheckBox struct {
+	id  string
+	box **walk.CheckBox
+}
+
 // Run starts the Windows message loop.
 func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	enableProcessDPIAwareness()
@@ -160,102 +180,108 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	var dialog *walk.Dialog
 	var apiKeyEdit *walk.LineEdit
 	var launchAtLogin *walk.CheckBox
-	var claudeBox *walk.CheckBox
-	var codexBox *walk.CheckBox
+
+	providerBoxes := make([]providerCheckBox, 0, len(agentOptions))
+	children := []Widget{
+		Label{
+			Text: "API Key",
+			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+		},
+		LineEdit{
+			AssignTo:  &apiKeyEdit,
+			Text:      apiKey,
+			CueBanner: "Paste your API key",
+		},
+		Label{
+			Text: "Agents",
+			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+		},
+	}
+	for _, option := range agentOptions {
+		box := new(*walk.CheckBox)
+		providerBoxes = append(providerBoxes, providerCheckBox{id: option.id, box: box})
+		children = append(children, CheckBox{
+			AssignTo: box,
+			Text:     option.label,
+			Checked:  enabled[option.id],
+		})
+	}
+	children = append(children,
+		Label{
+			Text: "General",
+			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+		},
+		CheckBox{
+			AssignTo: &launchAtLogin,
+			Text:     "Launch at login",
+			Checked:  launch.IsEnabled(),
+		},
+		Label{Text: version.Summary()},
+		Composite{
+			Layout: HBox{MarginsZero: true, Spacing: 8},
+			Children: []Widget{
+				HSpacer{},
+				PushButton{
+					Text: "Cancel",
+					OnClicked: func() {
+						dialog.Cancel()
+					},
+				},
+				PushButton{
+					Text: "Save",
+					OnClicked: func() {
+						apiKey := strings.TrimSpace(apiKeyEdit.Text())
+						if apiKey != "" {
+							if err := trayApp.SetAPIKey(apiKey); err != nil {
+								showError(dialog, "Settings", err)
+								return
+							}
+						}
+						if err := launch.SetEnabled(launchAtLogin.Checked()); err != nil {
+							showError(dialog, "Settings", err)
+							return
+						}
+						providers := selectedProviders(providerBoxes)
+						if len(providers) == 0 {
+							showError(dialog, "Settings", errors.New("select at least one agent"))
+							return
+						}
+						if err := trayApp.SetEnabledProviders(providers); err != nil {
+							showError(dialog, "Settings", err)
+							return
+						}
+						dialog.Accept()
+					},
+				},
+			},
+		},
+	)
 
 	_, err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
-		MinSize:   Size{Width: 540, Height: 332},
+		MinSize:   Size{Width: 540, Height: 560},
 		FixedSize: true,
 		Font:      Font{Family: "Segoe UI", PointSize: 9},
 		Layout: VBox{
 			Margins: Margins{Left: 20, Top: 18, Right: 20, Bottom: 18},
 			Spacing: 12,
 		},
-		Children: []Widget{
-			Label{
-				Text: "API Key",
-				Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
-			},
-			LineEdit{
-				AssignTo:  &apiKeyEdit,
-				Text:      apiKey,
-				CueBanner: "Paste your API key",
-			},
-			Label{
-				Text: "Agents",
-				Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
-			},
-			CheckBox{
-				AssignTo: &claudeBox,
-				Text:     "Claude Code",
-				Checked:  enabled["claude"],
-			},
-			CheckBox{
-				AssignTo: &codexBox,
-				Text:     "Codex",
-				Checked:  enabled["codex"],
-			},
-			Label{
-				Text: "General",
-				Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
-			},
-			CheckBox{
-				AssignTo: &launchAtLogin,
-				Text:     "Launch at login",
-				Checked:  launch.IsEnabled(),
-			},
-			Label{Text: version.Summary()},
-			Composite{
-				Layout: HBox{MarginsZero: true, Spacing: 8},
-				Children: []Widget{
-					HSpacer{},
-					PushButton{
-						Text: "Cancel",
-						OnClicked: func() {
-							dialog.Cancel()
-						},
-					},
-					PushButton{
-						Text: "Save",
-						OnClicked: func() {
-							apiKey := strings.TrimSpace(apiKeyEdit.Text())
-							if apiKey != "" {
-								if err := trayApp.SetAPIKey(apiKey); err != nil {
-									showError(dialog, "Settings", err)
-									return
-								}
-							}
-							if err := launch.SetEnabled(launchAtLogin.Checked()); err != nil {
-								showError(dialog, "Settings", err)
-								return
-							}
-							var providers []string
-							if claudeBox.Checked() {
-								providers = append(providers, "claude")
-							}
-							if codexBox.Checked() {
-								providers = append(providers, "codex")
-							}
-							if len(providers) == 0 {
-								showError(dialog, "Settings", errors.New("select at least one agent"))
-								return
-							}
-							if err := trayApp.SetEnabledProviders(providers); err != nil {
-								showError(dialog, "Settings", err)
-								return
-							}
-							dialog.Accept()
-						},
-					},
-				},
-			},
-		},
+		Children: children,
 	}.Run(owner)
 	if err != nil {
 		showError(owner, "Settings", err)
 	}
+}
+
+func selectedProviders(boxes []providerCheckBox) []string {
+	var providers []string
+	for _, item := range boxes {
+		if item.box != nil && *item.box != nil && (*item.box).Checked() {
+			providers = append(providers, item.id)
+		}
+	}
+	return providers
 }
 
 func openDashboard(owner *walk.MainWindow) {

@@ -13,6 +13,8 @@ import (
 
 const fileName = "windows-settings.json"
 
+var knownProviders = []string{"claude", "codex", "copilot", "gemini", "kimi", "qwen", "openclaw", "pi", "amp"}
+
 // Settings contains Windows client preferences.
 type Settings struct {
 	EnabledProviders []string `json:"enabled_providers"`
@@ -95,7 +97,12 @@ func (s *Store) Save(settings Settings) error {
 
 // Default returns the default Windows client settings.
 func Default() Settings {
-	return Settings{EnabledProviders: []string{"claude", "codex"}}
+	return Settings{EnabledProviders: KnownProviders()}
+}
+
+// KnownProviders returns the canonical provider order.
+func KnownProviders() []string {
+	return append([]string{}, knownProviders...)
 }
 
 // NormalizeProviders removes unknown and duplicate providers while preserving
@@ -107,11 +114,10 @@ func NormalizeProviders(providers []string) []string {
 	}
 
 	var normalized []string
-	if enabled["claude"] {
-		normalized = append(normalized, "claude")
-	}
-	if enabled["codex"] {
-		normalized = append(normalized, "codex")
+	for _, provider := range knownProviders {
+		if enabled[provider] {
+			normalized = append(normalized, provider)
+		}
 	}
 	return normalized
 }
