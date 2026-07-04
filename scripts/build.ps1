@@ -21,6 +21,8 @@ $Pkg = "./cmd/tracklm-windows"
 $DistDir = Join-Path $Root "dist"
 $Manifest = Join-Path $Root "cmd/tracklm-windows/tracklm-windows.exe.manifest"
 $ResourcesGo = Join-Path $Root "cmd/tracklm-windows/resources.go"
+$IconSvg = Join-Path $Root "assets/app-icon.svg"
+$IconIco = Join-Path $Root "assets/app-icon.ico"
 $AgentMod = Join-Path $Root "../tracklm-goagent/go.mod"
 $VersionPkg = "github.com/labx/tracklm-windows/internal/version"
 
@@ -56,6 +58,45 @@ function Ensure-Dist {
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 }
 
+function Find-Magick {
+    $command = Get-Command magick -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $candidates = @(
+        "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe",
+        "C:\Program Files\ImageMagick-7.1.2-Q16\magick.exe",
+        "C:\Program Files\ImageMagick-7.1.2-Q8\magick.exe"
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    Stop-Build "ImageMagick magick.exe was not found. Install ImageMagick or add magick.exe to PATH."
+}
+
+function Ensure-Icon {
+    $needsGenerate = -not (Test-Path -LiteralPath $IconIco -PathType Leaf)
+    if (-not $needsGenerate) {
+        $iconTime = (Get-Item -LiteralPath $IconIco).LastWriteTimeUtc
+        $sourceTime = (Get-Item -LiteralPath $IconSvg).LastWriteTimeUtc
+        $needsGenerate = $sourceTime -gt $iconTime
+    }
+
+    if ($needsGenerate) {
+        $magick = Find-Magick
+        Invoke-Checked $magick @(
+            "-background", "none",
+            $IconSvg,
+            "-define", "icon:auto-resize=256,128,64,48,32,24,16",
+            $IconIco
+        )
+    }
+}
+
 function Get-ResourcePath {
     param([string]$TargetArch)
     Join-Path $Root "cmd/tracklm-windows/rsrc_windows_$TargetArch.syso"
@@ -69,7 +110,7 @@ function Ensure-Resource {
 
     if (-not $needsGenerate) {
         $resourceTime = (Get-Item -LiteralPath $resource).LastWriteTimeUtc
-        foreach ($source in @($Manifest, $ResourcesGo)) {
+        foreach ($source in @($Manifest, $ResourcesGo, $IconIco)) {
             if ((Get-Item -LiteralPath $source).LastWriteTimeUtc -gt $resourceTime) {
                 $needsGenerate = $true
                 break
@@ -82,6 +123,7 @@ function Ensure-Resource {
             "run", "github.com/akavel/rsrc@latest",
             "-arch", $TargetArch,
             "-manifest", $Manifest,
+            "-ico", $IconIco,
             "-o", $resource
         )
     }
@@ -139,6 +181,7 @@ function Generate-Resources {
             "run", "github.com/akavel/rsrc@latest",
             "-arch", $targetArch,
             "-manifest", $Manifest,
+            "-ico", $IconIco,
             "-o", $resource
         )
     }
@@ -148,9 +191,11 @@ Push-Location $Root
 try {
     switch ($Task) {
         "build" {
+            Ensure-Icon
             Build-App
         }
         "debug" {
+            Ensure-Icon
             Build-App -Debug
         }
         "test" {
@@ -158,12 +203,14 @@ try {
             Invoke-Checked $Go @("test", "./...")
         }
         "generate" {
+            Ensure-Icon
             Generate-Resources
         }
         "clean" {
             Remove-Item -Recurse -Force -LiteralPath $DistDir -ErrorAction SilentlyContinue
         }
         "size" {
+            Ensure-Icon
             Build-App
             Get-Item -LiteralPath (Join-Path $DistDir "$App-$Arch.exe") | Select-Object FullName, Length
         }
