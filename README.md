@@ -18,6 +18,25 @@ tracklm-windows.exe
 The Windows client does not bundle or spawn a separate agent process. It builds
 one executable and shares the same `~/.tokitoki` state as the CLI.
 
+## Source layout
+
+This project imports the agent library through this local replacement:
+
+```text
+replace github.com/labx/tokitoki-agent => ../tracklm-goagent
+```
+
+For local builds, keep both projects next to each other:
+
+```text
+tracklm/
+  tracklm-goagent/
+  tracklm-windows/
+```
+
+If `tracklm-windows` is copied alone, `make` cannot resolve `agentlib` and Go
+will report that the replacement path cannot be found.
+
 ## Build
 
 ```sh
