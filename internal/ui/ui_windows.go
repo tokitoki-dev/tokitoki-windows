@@ -33,6 +33,12 @@ var agentOptions = []struct {
 	{"openclaw", "OpenClaw"},
 	{"pi", "pi-agent"},
 	{"amp", "Amp"},
+	{"droid", "Droid"},
+	{"kilo", "Kilo"},
+	{"hermes", "Hermes Agent"},
+	{"codebuff", "Codebuff"},
+	{"opencode", "OpenCode"},
+	{"goose", "Goose"},
 }
 
 type providerCheckBox struct {
@@ -260,7 +266,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	_, err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
-		MinSize:   Size{Width: 540, Height: 560},
+		MinSize:   Size{Width: 540, Height: 760},
 		FixedSize: true,
 		Font:      Font{Family: "Segoe UI", PointSize: 9},
 		Layout: VBox{

@@ -70,6 +70,18 @@ func paths(provider string) []string {
 		return piPaths()
 	case "amp":
 		return ampPaths()
+	case "droid":
+		return droidPaths()
+	case "kilo":
+		return kiloPaths()
+	case "hermes":
+		return hermesPaths()
+	case "codebuff":
+		return codebuffPaths()
+	case "opencode":
+		return openCodePaths()
+	case "goose":
+		return goosePaths()
 	default:
 		return nil
 	}
@@ -179,6 +191,84 @@ func ampPaths() []string {
 		return nil
 	}
 	return []string{filepath.Join(home, ".local", "share", "amp")}
+}
+
+func droidPaths() []string {
+	if configured := os.Getenv("DROID_SESSIONS_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".factory", "sessions")}
+}
+
+func kiloPaths() []string {
+	if configured := os.Getenv("KILO_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".local", "share", "kilo")}
+}
+
+func hermesPaths() []string {
+	if configured := os.Getenv("HERMES_HOME"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".hermes")}
+}
+
+func codebuffPaths() []string {
+	if configured := os.Getenv("CODEBUFF_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".config", "manicode"),
+		filepath.Join(home, ".config", "manicode-dev"),
+		filepath.Join(home, ".config", "manicode-staging"),
+	}
+}
+
+func openCodePaths() []string {
+	if configured := os.Getenv("OPENCODE_DATA_DIR"); configured != "" {
+		return splitConfiguredDirs(configured, false)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(home, ".local", "share", "opencode")}
+}
+
+func goosePaths() []string {
+	if configured := os.Getenv("GOOSE_PATH_ROOT"); strings.TrimSpace(configured) != "" {
+		paths := splitConfiguredDirs(configured, false)
+		for index, path := range paths {
+			paths[index] = filepath.Join(path, "data", "sessions", "sessions.db")
+		}
+		return paths
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"),
+		filepath.Join(home, "Library", "Application Support", "goose", "sessions", "sessions.db"),
+		filepath.Join(home, ".local", "share", "Block", "goose", "sessions", "sessions.db"),
+	}
 }
 
 func splitConfiguredDirs(value string, trimProjects bool) []string {

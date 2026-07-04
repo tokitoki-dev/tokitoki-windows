@@ -13,7 +13,23 @@ import (
 
 const fileName = "windows-settings.json"
 
-var knownProviders = []string{"claude", "codex", "copilot", "gemini", "kimi", "qwen", "openclaw", "pi", "amp"}
+var knownProviders = []string{
+	"claude",
+	"codex",
+	"copilot",
+	"gemini",
+	"kimi",
+	"qwen",
+	"openclaw",
+	"pi",
+	"amp",
+	"droid",
+	"kilo",
+	"hermes",
+	"codebuff",
+	"opencode",
+	"goose",
+}
 
 // Settings contains Windows client preferences.
 type Settings struct {
