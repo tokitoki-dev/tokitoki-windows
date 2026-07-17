@@ -21,32 +21,6 @@ import (
 	"github.com/lxn/win"
 )
 
-var agentOptions = []struct {
-	id    string
-	label string
-}{
-	{"claude", "Claude Code"},
-	{"codex", "Codex"},
-	{"copilot", "GitHub Copilot CLI"},
-	{"gemini", "Gemini CLI"},
-	{"kimi", "Kimi"},
-	{"qwen", "Qwen"},
-	{"openclaw", "OpenClaw"},
-	{"pi", "pi-agent"},
-	{"amp", "Amp"},
-	{"droid", "Droid"},
-	{"kilo", "Kilo"},
-	{"hermes", "Hermes Agent"},
-	{"codebuff", "Codebuff"},
-	{"opencode", "OpenCode"},
-	{"goose", "Goose"},
-}
-
-type providerCheckBox struct {
-	id  string
-	box **walk.CheckBox
-}
-
 // Run starts the Windows message loop.
 func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	enableProcessDPIAwareness()
@@ -143,24 +117,7 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 		return err
 	}
 
-	statusAction := walk.NewAction()
-	if err := statusAction.SetText(statusText(trayApp.Status())); err != nil {
-		return err
-	}
-	if err := statusAction.SetEnabled(false); err != nil {
-		return err
-	}
-	if err := menu.Actions().Add(statusAction); err != nil {
-		return err
-	}
-	if err := menu.Actions().Add(walk.NewSeparatorAction()); err != nil {
-		return err
-	}
-
 	if err := addAction(menu, "Dashboard", func() { openDashboard(owner, trayApp) }); err != nil {
-		return err
-	}
-	if err := addAction(menu, "Sync now", trayApp.SyncNow); err != nil {
 		return err
 	}
 	if err := addAction(menu, "Settings", func() { showSettings(owner, trayApp) }); err != nil {
@@ -169,24 +126,10 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 	if err := menu.Actions().Add(walk.NewSeparatorAction()); err != nil {
 		return err
 	}
-	if err := addAction(menu, "Quit", func() {
+	return addAction(menu, "Quit", func() {
 		logger.Info("quit requested")
 		walk.App().Exit(0)
-	}); err != nil {
-		return err
-	}
-
-	lastWarning := trayApp.Status().LastError
-	trayApp.OnStatusChanged(func(status coreapp.Status) {
-		owner.Synchronize(func() {
-			_ = statusAction.SetText(statusText(status))
-			if status.LastError != "" && status.LastError != lastWarning && notifyIcon.Visible() {
-				_ = notifyIcon.ShowWarning("TokiToki sync failed", truncateStatus(status.LastError))
-			}
-			lastWarning = status.LastError
-		})
 	})
-	return nil
 }
 
 func addAction(menu *walk.Menu, text string, handler func()) error {
@@ -203,13 +146,12 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	if err != nil && !errors.Is(err, agentlib.ErrMissingAPIKey) {
 		showError(owner, "Settings", err)
 	}
-	enabled := providerSet(trayApp.EnabledProviders())
 
 	var dialog *walk.Dialog
 	var apiKeyEdit *walk.LineEdit
 	var launchAtLogin *walk.CheckBox
 
-	providerBoxes := make([]providerCheckBox, 0, len(agentOptions))
+	var checkUpdatesButton *walk.PushButton
 	children := []Widget{
 		Label{
 			Text: "API Key",
@@ -220,21 +162,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 			Text:      apiKey,
 			CueBanner: "Paste your API key",
 		},
-		Label{
-			Text: "Agents",
-			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
-		},
 	}
-	for _, option := range agentOptions {
-		box := new(*walk.CheckBox)
-		providerBoxes = append(providerBoxes, providerCheckBox{id: option.id, box: box})
-		children = append(children, CheckBox{
-			AssignTo: box,
-			Text:     option.label,
-			Checked:  enabled[option.id],
-		})
-	}
-	var checkUpdatesButton *walk.PushButton
 	children = append(children,
 		Label{
 			Text: "General",
@@ -287,15 +215,6 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 							showError(dialog, "Settings", err)
 							return
 						}
-						providers := selectedProviders(providerBoxes)
-						if len(providers) == 0 {
-							showError(dialog, "Settings", errors.New("select at least one agent"))
-							return
-						}
-						if err := trayApp.SetEnabledProviders(providers); err != nil {
-							showError(dialog, "Settings", err)
-							return
-						}
 						dialog.Accept()
 					},
 				},
@@ -306,7 +225,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	_, err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
-		MinSize:   Size{Width: 540, Height: 820},
+		MinSize:   Size{Width: 460, Height: 320},
 		FixedSize: true,
 		Font:      Font{Family: "Segoe UI", PointSize: 9},
 		Layout: VBox{
@@ -356,16 +275,6 @@ func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton) {
 	}()
 }
 
-func selectedProviders(boxes []providerCheckBox) []string {
-	var providers []string
-	for _, item := range boxes {
-		if item.box != nil && *item.box != nil && (*item.box).Checked() {
-			providers = append(providers, item.id)
-		}
-	}
-	return providers
-}
-
 // openDashboard resolves the signed login link off the UI thread — the tray
 // must stay responsive while the server is asked — then opens the browser
 // back on it, as walk requires.
@@ -386,27 +295,6 @@ func showError(owner walk.Form, title string, err error) {
 		return
 	}
 	walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError|walk.MsgBoxOK)
-}
-
-func providerSet(providers []string) map[string]bool {
-	set := make(map[string]bool, len(providers))
-	for _, provider := range providers {
-		set[provider] = true
-	}
-	return set
-}
-
-func statusText(status coreapp.Status) string {
-	switch {
-	case status.Syncing:
-		return "Status: syncing"
-	case status.LastError != "":
-		return "Status: failed"
-	case !status.LastSyncAt.IsZero():
-		return "Last sync: " + status.LastSyncAt.Local().Format("15:04")
-	default:
-		return "Status: idle"
-	}
 }
 
 func truncateStatus(message string) string {

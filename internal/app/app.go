@@ -21,13 +21,6 @@ const (
 	dashboardLoginTimeout = 10 * time.Second
 )
 
-// Status describes current sync state for UI presentation.
-type Status struct {
-	Syncing    bool
-	LastSyncAt time.Time
-	LastError  string
-}
-
 // App owns the long-lived Windows client services.
 type App struct {
 	client       *agentlib.Client
@@ -38,9 +31,6 @@ type App struct {
 	providerLock sync.RWMutex
 	providers    []string
 	tracking     bool
-	statusLock   sync.RWMutex
-	status       Status
-	statusSubs   []func(Status)
 	ctx          context.Context
 }
 
@@ -62,7 +52,6 @@ func New(logger *slog.Logger) (*App, error) {
 		logger:   logger,
 	}
 	app.syncer = syncer.New(client, app.syncOptions, logger)
-	app.syncer.SetObserver(app)
 	app.watcher = watcher.New(watchDebounce, app.syncer.Trigger, logger)
 	return app, nil
 }
@@ -98,23 +87,6 @@ func (a *App) EnabledProviders() []string {
 	a.providerLock.RLock()
 	defer a.providerLock.RUnlock()
 	return append([]string{}, a.providers...)
-}
-
-// SetEnabledProviders persists selected providers and restarts monitoring.
-func (a *App) SetEnabledProviders(providers []string) error {
-	providers = settings.NormalizeProviders(providers)
-	if len(providers) == 0 {
-		return a.settings.Save(settings.Settings{})
-	}
-	if err := a.saveSettings(providers, a.TrackingEnabled()); err != nil {
-		return err
-	}
-	a.setProviders(providers)
-	if err := a.RestartMonitoring(); err != nil {
-		return err
-	}
-	a.SyncNow()
-	return nil
 }
 
 // TrackingEnabled reports whether monitoring and syncing are active.
@@ -177,51 +149,6 @@ func (a *App) SetAPIKey(apiKey string) error {
 	return nil
 }
 
-// Status returns the current sync status.
-func (a *App) Status() Status {
-	a.statusLock.RLock()
-	defer a.statusLock.RUnlock()
-	return a.status
-}
-
-// OnStatusChanged registers a sync status callback.
-func (a *App) OnStatusChanged(handler func(Status)) {
-	a.statusLock.Lock()
-	a.statusSubs = append(a.statusSubs, handler)
-	status := a.status
-	a.statusLock.Unlock()
-	handler(status)
-}
-
-// SyncStarted records a running sync.
-func (a *App) SyncStarted() {
-	a.setStatus(func(status *Status) {
-		status.Syncing = true
-		status.LastError = ""
-	})
-}
-
-// SyncSucceeded records a completed sync.
-func (a *App) SyncSucceeded(at time.Time) {
-	a.setStatus(func(status *Status) {
-		status.Syncing = false
-		status.LastSyncAt = at
-		status.LastError = ""
-	})
-}
-
-// SyncFailed records a failed sync.
-func (a *App) SyncFailed(err error) {
-	message := ""
-	if err != nil {
-		message = err.Error()
-	}
-	a.setStatus(func(status *Status) {
-		status.Syncing = false
-		status.LastError = message
-	})
-}
-
 // RestartMonitoring restarts filesystem monitoring for enabled providers.
 // With tracking off there is nothing to watch: Start with no paths just
 // stops the current watcher.
@@ -265,16 +192,4 @@ func (a *App) saveSettings(providers []string, tracking bool) error {
 		EnabledProviders: providers,
 		TrackingDisabled: !tracking,
 	})
-}
-
-func (a *App) setStatus(update func(*Status)) {
-	a.statusLock.Lock()
-	update(&a.status)
-	status := a.status
-	subscribers := append([]func(Status){}, a.statusSubs...)
-	a.statusLock.Unlock()
-
-	for _, subscriber := range subscribers {
-		subscriber(status)
-	}
 }

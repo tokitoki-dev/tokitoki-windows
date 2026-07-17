@@ -18,19 +18,11 @@ type Client interface {
 // OptionsFunc resolves provider directories for each sync attempt.
 type OptionsFunc func() agentlib.SyncOptions
 
-// Observer receives sync lifecycle events.
-type Observer interface {
-	SyncStarted()
-	SyncSucceeded(time.Time)
-	SyncFailed(error)
-}
-
 // Syncer runs sync requests one at a time and keeps at most one queued request.
 type Syncer struct {
 	client  Client
 	options OptionsFunc
 	logger  *slog.Logger
-	events  Observer
 
 	requests chan struct{}
 	done     chan struct{}
@@ -49,11 +41,6 @@ func New(client Client, options OptionsFunc, logger *slog.Logger) *Syncer {
 		requests: make(chan struct{}, 1),
 		done:     make(chan struct{}),
 	}
-}
-
-// SetObserver sets an optional observer for sync lifecycle events.
-func (s *Syncer) SetObserver(observer Observer) {
-	s.events = observer
 }
 
 // Start runs the worker until ctx is cancelled.
@@ -95,23 +82,14 @@ func (s *Syncer) syncOnce(ctx context.Context) {
 		s.logger.Debug("skip sync; no existing provider directories")
 		return
 	}
-	if s.events != nil {
-		s.events.SyncStarted()
-	}
 
 	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
 	defer cancel()
 	if err := s.client.Sync(syncCtx, options); err != nil {
 		s.logger.Warn("sync failed", "error", err)
-		if s.events != nil {
-			s.events.SyncFailed(err)
-		}
 		return
 	}
 	s.logger.Info("sync completed")
-	if s.events != nil {
-		s.events.SyncSucceeded(time.Now())
-	}
 }
 
 // Periodically triggers sync until ctx is cancelled.
