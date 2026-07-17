@@ -13,6 +13,7 @@ import (
 
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/version"
 	"github.com/lxn/walk"
@@ -118,6 +119,30 @@ func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp 
 
 func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) error {
 	menu := notifyIcon.ContextMenu()
+
+	// The tracking switch leads the menu, as on macOS: pausing the app is the
+	// one action that must never be buried in a dialog.
+	trackingAction := walk.NewAction()
+	if err := trackingAction.SetText("Tracking enabled"); err != nil {
+		return err
+	}
+	if err := trackingAction.SetCheckable(true); err != nil {
+		return err
+	}
+	if err := trackingAction.SetChecked(trayApp.TrackingEnabled()); err != nil {
+		return err
+	}
+	trackingAction.Triggered().Attach(func() {
+		enabled := !trayApp.TrackingEnabled()
+		if err := trayApp.SetTrackingEnabled(enabled); err != nil {
+			showError(owner, "Tracking", err)
+		}
+		_ = trackingAction.SetChecked(trayApp.TrackingEnabled())
+	})
+	if err := menu.Actions().Add(trackingAction); err != nil {
+		return err
+	}
+
 	statusAction := walk.NewAction()
 	if err := statusAction.SetText(statusText(trayApp.Status())); err != nil {
 		return err
@@ -209,6 +234,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 			Checked:  enabled[option.id],
 		})
 	}
+	var checkUpdatesButton *walk.PushButton
 	children = append(children,
 		Label{
 			Text: "General",
@@ -219,7 +245,24 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 			Text:     "Launch at login",
 			Checked:  launch.IsEnabled(),
 		},
-		Label{Text: version.Summary()},
+		Label{
+			Text: "Updates",
+			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+		},
+		Composite{
+			Layout: HBox{MarginsZero: true, Spacing: 8},
+			Children: []Widget{
+				Label{Text: version.Summary()},
+				HSpacer{},
+				PushButton{
+					AssignTo: &checkUpdatesButton,
+					Text:     "Check for updates",
+					OnClicked: func() {
+						runUpdateCheck(dialog, checkUpdatesButton)
+					},
+				},
+			},
+		},
 		Composite{
 			Layout: HBox{MarginsZero: true, Spacing: 8},
 			Children: []Widget{
@@ -263,7 +306,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	_, err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
-		MinSize:   Size{Width: 540, Height: 760},
+		MinSize:   Size{Width: 540, Height: 820},
 		FixedSize: true,
 		Font:      Font{Family: "Segoe UI", PointSize: 9},
 		Layout: VBox{
@@ -275,6 +318,42 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	if err != nil {
 		showError(owner, "Settings", err)
 	}
+}
+
+// runUpdateCheck asks the server for a newer build off the UI thread, then
+// reports back on it. A "yes" on the offer opens the download in the browser —
+// the app never replaces its own running executable.
+func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton) {
+	button.SetEnabled(false)
+	go func() {
+		update, err := appupdate.Check(context.Background(), agentlib.BaseURL(), version.Version)
+		owner.Synchronize(func() {
+			button.SetEnabled(true)
+			switch {
+			case errors.Is(err, appupdate.ErrDevBuild):
+				walk.MsgBox(owner, "Updates",
+					"This is a development build; update checks are disabled.",
+					walk.MsgBoxIconInformation|walk.MsgBoxOK)
+			case err != nil:
+				showError(owner, "Updates", err)
+			case update == nil:
+				walk.MsgBox(owner, "Updates",
+					fmt.Sprintf("You're up to date (%s).", version.Summary()),
+					walk.MsgBoxIconInformation|walk.MsgBoxOK)
+			default:
+				answer := walk.MsgBox(owner, "Updates",
+					fmt.Sprintf("Version %s is available. Download it now?", update.Version),
+					walk.MsgBoxIconQuestion|walk.MsgBoxYesNo)
+				if answer == walk.DlgCmdYes {
+					verb := syscall.StringToUTF16Ptr("open")
+					target := syscall.StringToUTF16Ptr(update.DownloadURL)
+					if !win.ShellExecute(owner.Handle(), verb, target, nil, nil, win.SW_SHOWNORMAL) {
+						showError(owner, "Updates", fmt.Errorf("open %s failed", update.DownloadURL))
+					}
+				}
+			}
+		})
+	}()
 }
 
 func selectedProviders(boxes []providerCheckBox) []string {

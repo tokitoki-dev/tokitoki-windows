@@ -45,3 +45,30 @@ func TestStoreRejectsEmptyProviders(t *testing.T) {
 		t.Fatal("Save() error = nil, want empty provider rejection")
 	}
 }
+
+func TestStoreRoundTripsTrackingDisabled(t *testing.T) {
+	store := NewStore(t.TempDir())
+
+	if err := store.Save(Settings{EnabledProviders: []string{"claude"}, TrackingDisabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TrackingDisabled {
+		t.Fatal("TrackingDisabled = false, want persisted true")
+	}
+
+	// A pre-existing settings file without the field means tracking on.
+	if err := store.Save(Settings{EnabledProviders: []string{"claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TrackingDisabled {
+		t.Fatal("TrackingDisabled = true, want default false")
+	}
+}

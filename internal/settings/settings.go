@@ -34,6 +34,10 @@ var knownProviders = []string{
 // Settings contains Windows client preferences.
 type Settings struct {
 	EnabledProviders []string `json:"enabled_providers"`
+	// TrackingDisabled pauses all monitoring and syncing. Stored inverted so
+	// the zero value — and every settings file written before the field
+	// existed — means "tracking on", the default.
+	TrackingDisabled bool `json:"tracking_disabled,omitempty"`
 }
 
 // Store reads and writes settings under the shared TokiToki data directory.

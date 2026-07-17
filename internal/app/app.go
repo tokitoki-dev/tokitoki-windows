@@ -37,6 +37,7 @@ type App struct {
 	logger       *slog.Logger
 	providerLock sync.RWMutex
 	providers    []string
+	tracking     bool
 	statusLock   sync.RWMutex
 	status       Status
 	statusSubs   []func(Status)
@@ -74,6 +75,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.setProviders(config.EnabledProviders)
+	a.setTracking(!config.TrackingDisabled)
 
 	a.syncer.Start(ctx)
 	a.syncer.Periodically(ctx, syncInterval)
@@ -104,10 +106,36 @@ func (a *App) SetEnabledProviders(providers []string) error {
 	if len(providers) == 0 {
 		return a.settings.Save(settings.Settings{})
 	}
-	if err := a.settings.Save(settings.Settings{EnabledProviders: providers}); err != nil {
+	if err := a.saveSettings(providers, a.TrackingEnabled()); err != nil {
 		return err
 	}
 	a.setProviders(providers)
+	if err := a.RestartMonitoring(); err != nil {
+		return err
+	}
+	a.SyncNow()
+	return nil
+}
+
+// TrackingEnabled reports whether monitoring and syncing are active.
+func (a *App) TrackingEnabled() bool {
+	a.providerLock.RLock()
+	defer a.providerLock.RUnlock()
+	return a.tracking
+}
+
+// SetTrackingEnabled persists the tracking switch and applies it: off stops
+// filesystem monitoring and makes sync runs no-ops, on resumes both and
+// syncs immediately to catch up on whatever happened while paused.
+func (a *App) SetTrackingEnabled(enabled bool) error {
+	if err := a.saveSettings(a.EnabledProviders(), enabled); err != nil {
+		return err
+	}
+	a.setTracking(enabled)
+	if !enabled {
+		a.watcher.Stop()
+		return nil
+	}
 	if err := a.RestartMonitoring(); err != nil {
 		return err
 	}
@@ -195,15 +223,26 @@ func (a *App) SyncFailed(err error) {
 }
 
 // RestartMonitoring restarts filesystem monitoring for enabled providers.
+// With tracking off there is nothing to watch: Start with no paths just
+// stops the current watcher.
 func (a *App) RestartMonitoring() error {
 	if a.ctx == nil {
 		return nil
 	}
-	paths := datadirs.WatchPaths(a.EnabledProviders())
+	var paths []string
+	if a.TrackingEnabled() {
+		paths = datadirs.WatchPaths(a.EnabledProviders())
+	}
 	return a.watcher.Start(a.ctx, paths)
 }
 
+// syncOptions resolves what a sync run should scan. Tracking off means
+// nothing — the syncer already treats an empty provider set as a no-op, so
+// the pause needs no second mechanism.
 func (a *App) syncOptions() agentlib.SyncOptions {
+	if !a.TrackingEnabled() {
+		return agentlib.SyncOptions{}
+	}
 	return datadirs.Resolve(a.EnabledProviders()).SyncOptions()
 }
 
@@ -211,6 +250,21 @@ func (a *App) setProviders(providers []string) {
 	a.providerLock.Lock()
 	defer a.providerLock.Unlock()
 	a.providers = append([]string{}, providers...)
+}
+
+func (a *App) setTracking(enabled bool) {
+	a.providerLock.Lock()
+	defer a.providerLock.Unlock()
+	a.tracking = enabled
+}
+
+// saveSettings persists the full preference set. Every caller passes both
+// fields so a toggle can never clobber the provider list and vice versa.
+func (a *App) saveSettings(providers []string, tracking bool) error {
+	return a.settings.Save(settings.Settings{
+		EnabledProviders: providers,
+		TrackingDisabled: !tracking,
+	})
 }
 
 func (a *App) setStatus(update func(*Status)) {
