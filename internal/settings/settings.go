@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 const fileName = "windows-settings.json"

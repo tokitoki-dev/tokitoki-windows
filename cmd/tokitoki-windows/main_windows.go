@@ -9,9 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/labx/tracklm-windows/internal/app"
-	"github.com/labx/tracklm-windows/internal/instance"
-	"github.com/labx/tracklm-windows/internal/ui"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/app"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/instance"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/ui"
 )
 
 func main() {

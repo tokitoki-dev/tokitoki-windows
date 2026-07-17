@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 // Client is the subset of agentlib.Client used by Syncer.

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 // Directories contains selected provider directories.

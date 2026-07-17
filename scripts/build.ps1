@@ -16,15 +16,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
-$App = "tracklm-windows"
-$Pkg = "./cmd/tracklm-windows"
+$App = "tokitoki-windows"
+$Pkg = "./cmd/tokitoki-windows"
 $DistDir = Join-Path $Root "dist"
-$Manifest = Join-Path $Root "cmd/tracklm-windows/tracklm-windows.exe.manifest"
-$ResourcesGo = Join-Path $Root "cmd/tracklm-windows/resources.go"
+$Manifest = Join-Path $Root "cmd/tokitoki-windows/tokitoki-windows.exe.manifest"
+$ResourcesGo = Join-Path $Root "cmd/tokitoki-windows/resources.go"
 $IconSvg = Join-Path $Root "assets/app-icon.svg"
 $IconIco = Join-Path $Root "assets/app-icon.ico"
-$AgentMod = Join-Path $Root "../tracklm-goagent/go.mod"
-$VersionPkg = "github.com/labx/tracklm-windows/internal/version"
+$AgentMod = Join-Path $Root "../tokitoki-cli/go.mod"
+$VersionPkg = "github.com/tokitoki-dev/tokitoki-windows/internal/version"
 
 function Stop-Build {
     param(
@@ -50,7 +50,7 @@ function Invoke-Checked {
 
 function Assert-Agent {
     if (-not (Test-Path -LiteralPath $AgentMod -PathType Leaf)) {
-        Stop-Build "Missing ../tracklm-goagent. Put tracklm-goagent next to tracklm-windows or publish the module and remove the replace directive."
+        Stop-Build "Missing ../tokitoki-cli. Put tokitoki-cli next to tokitoki-windows or publish the module and remove the replace directive."
     }
 }
 
@@ -99,7 +99,7 @@ function Ensure-Icon {
 
 function Get-ResourcePath {
     param([string]$TargetArch)
-    Join-Path $Root "cmd/tracklm-windows/rsrc_windows_$TargetArch.syso"
+    Join-Path $Root "cmd/tokitoki-windows/rsrc_windows_$TargetArch.syso"
 }
 
 function Ensure-Resource {

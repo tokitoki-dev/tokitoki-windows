@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 func TestSyncerCoalescesRequests(t *testing.T) {

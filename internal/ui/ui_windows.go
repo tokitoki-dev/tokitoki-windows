@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
-	coreapp "github.com/labx/tracklm-windows/internal/app"
-	"github.com/labx/tracklm-windows/internal/launch"
-	"github.com/labx/tracklm-windows/internal/version"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/version"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
@@ -85,7 +85,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	}
 	notifyIcon.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
 		if button == walk.LeftButton {
-			openDashboard(mainWindow)
+			openDashboard(mainWindow, trayApp)
 		}
 	})
 
@@ -132,13 +132,10 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 		return err
 	}
 
-	if err := addAction(menu, "Dashboard", func() { openDashboard(owner) }); err != nil {
+	if err := addAction(menu, "Dashboard", func() { openDashboard(owner, trayApp) }); err != nil {
 		return err
 	}
 	if err := addAction(menu, "Sync now", trayApp.SyncNow); err != nil {
-		return err
-	}
-	if err := addAction(menu, "Agents", func() { showSettings(owner, trayApp) }); err != nil {
 		return err
 	}
 	if err := addAction(menu, "Settings", func() { showSettings(owner, trayApp) }); err != nil {
@@ -290,12 +287,19 @@ func selectedProviders(boxes []providerCheckBox) []string {
 	return providers
 }
 
-func openDashboard(owner *walk.MainWindow) {
-	verb := syscall.StringToUTF16Ptr("open")
-	target := syscall.StringToUTF16Ptr(coreapp.DashboardURL)
-	if !win.ShellExecute(owner.Handle(), verb, target, nil, nil, win.SW_SHOWNORMAL) {
-		showError(owner, "Dashboard", fmt.Errorf("open %s failed", coreapp.DashboardURL))
-	}
+// openDashboard resolves the signed login link off the UI thread — the tray
+// must stay responsive while the server is asked — then opens the browser
+// back on it, as walk requires.
+func openDashboard(owner *walk.MainWindow, trayApp *coreapp.App) {
+	go func() {
+		target := trayApp.DashboardTarget(context.Background())
+		owner.Synchronize(func() {
+			verb := syscall.StringToUTF16Ptr("open")
+			if !win.ShellExecute(owner.Handle(), verb, syscall.StringToUTF16Ptr(target), nil, nil, win.SW_SHOWNORMAL) {
+				showError(owner, "Dashboard", fmt.Errorf("open %s failed", target))
+			}
+		})
+	}()
 }
 
 func showError(owner walk.Form, title string, err error) {

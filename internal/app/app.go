@@ -7,19 +7,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labx/tokitoki-agent/pkg/agentlib"
-	"github.com/labx/tracklm-windows/internal/datadirs"
-	"github.com/labx/tracklm-windows/internal/settings"
-	"github.com/labx/tracklm-windows/internal/syncer"
-	"github.com/labx/tracklm-windows/internal/watcher"
+	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/datadirs"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/settings"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/syncer"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/watcher"
 )
 
 const (
-	// DashboardURL is the local TokiToki dashboard URL.
-	DashboardURL = "http://localhost:9093"
-
 	syncInterval  = 30 * time.Minute
 	watchDebounce = 2 * time.Second
+
+	dashboardLoginTimeout = 10 * time.Second
 )
 
 // Status describes current sync state for UI presentation.
@@ -119,6 +118,21 @@ func (a *App) SetEnabledProviders(providers []string) error {
 // SyncNow requests an immediate sync.
 func (a *App) SyncNow() {
 	a.syncer.Trigger()
+}
+
+// DashboardTarget returns the URL the Dashboard action should open: a signed
+// one-time login link when the server will mint one, so the browser lands
+// already signed in; otherwise the plain server URL. Callers must not invoke
+// this on the UI thread — it talks to the network.
+func (a *App) DashboardTarget(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, dashboardLoginTimeout)
+	defer cancel()
+	url, err := a.client.DashboardURL(ctx)
+	if err != nil {
+		a.logger.Debug("dashboard login link unavailable", "error", err)
+		return agentlib.BaseURL()
+	}
+	return url
 }
 
 // APIKey returns the configured API key.

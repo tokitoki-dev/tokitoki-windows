@@ -1,18 +1,18 @@
 # TokiToki Windows
 
 A native Windows tray app for TokiToki. The app is a small Go executable that
-uses the shared `github.com/labx/tokitoki-agent/pkg/agentlib` package for local
+uses the shared `github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib` package for local
 AI usage scanning and upload.
 
 ## Architecture
 
 ```text
-tracklm-windows.exe
+tokitoki-windows.exe
   ├─ native Windows tray and settings UI
   ├─ launch-at-login registry integration
   ├─ recursive Claude Code / Codex directory watcher
   ├─ periodic sync scheduler
-  └─ agentlib sync engine from ../tracklm-goagent
+  └─ agentlib sync engine from ../tokitoki-cli
 ```
 
 The Windows client does not bundle or spawn a separate agent process. It builds
@@ -23,18 +23,18 @@ one executable and shares the same `~/.tokitoki` state as the CLI.
 This project imports the agent library through this local replacement:
 
 ```text
-replace github.com/labx/tokitoki-agent => ../tracklm-goagent
+replace github.com/tokitoki-dev/tokitoki-cli => ../tokitoki-cli
 ```
 
 For local builds, keep both projects next to each other:
 
 ```text
-tracklm/
-  tracklm-goagent/
-  tracklm-windows/
+tokitoki/
+  tokitoki-cli/
+  tokitoki-windows/
 ```
 
-If `tracklm-windows` is copied alone, `make` cannot resolve `agentlib` and Go
+If `tokitoki-windows` is copied alone, `make` cannot resolve `agentlib` and Go
 will report that the replacement path cannot be found.
 
 ## Build
@@ -46,13 +46,13 @@ make build
 The release executable is written to:
 
 ```text
-dist/tracklm-windows-amd64.exe
+dist/tokitoki-windows-amd64.exe
 ```
 
 For compatibility, the default amd64 build also writes:
 
 ```text
-dist/tracklm-windows.exe
+dist/tokitoki-windows.exe
 ```
 
 `make` without a target also runs `make build`.
@@ -66,7 +66,7 @@ make build-arm64
 That writes:
 
 ```text
-dist/tracklm-windows-arm64.exe
+dist/tokitoki-windows-arm64.exe
 ```
 
 Build both release architectures:

@@ -7,7 +7,7 @@ import (
 	"context"
 	"log/slog"
 
-	coreapp "github.com/labx/tracklm-windows/internal/app"
+	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
 )
 
 // Run is a no-op outside Windows.
