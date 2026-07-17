@@ -1,0 +1,62 @@
+name: Release
+
+# Pushing a semver tag (v1.2.0) builds both Windows executables and publishes
+# a GitHub release. Asset names (`tokitoki-windows-<arch>.exe`) carry the
+# platform and arch tokens the server's asset matcher expects. Publishing to
+# users still happens in /admin/releases — a GitHub release alone ships
+# nothing.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tokitoki-windows
+    steps:
+      # go.mod resolves the agentlib module from a sibling checkout
+      # (replace => ../tokitoki-cli), pinned to the CLI's latest release tag
+      # so a release links released library code, not whatever main holds.
+      - uses: actions/checkout@v4
+        with:
+          path: tokitoki-windows
+      - uses: actions/checkout@v4
+        with:
+          repository: tokitoki-dev/tokitoki-cli
+          path: tokitoki-cli
+          fetch-depth: 0
+      - name: Pin the CLI checkout to its latest release tag
+        working-directory: tokitoki-cli
+        run: |
+          $tag = git tag --list "v[0-9]*" --sort=-v:refname | Select-Object -First 1
+          if (-not $tag) { throw "tokitoki-cli has no release tag" }
+          git checkout --quiet $tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tokitoki-windows/go.mod
+
+      - name: Test
+        run: pwsh -NoProfile -File scripts/build.ps1 -Task test
+
+      - name: Build both architectures
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          foreach ($arch in @("amd64", "arm64")) {
+            pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch `
+              -Version $version -Commit $env:GITHUB_SHA -BuildDate $date
+          }
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*.exe).FullName `
+            --title $env:GITHUB_REF_NAME `
+            --generate-notes

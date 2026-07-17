@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tokitoki-windows
+    steps:
+      # go.mod resolves the agentlib module from a sibling checkout
+      # (replace => ../tokitoki-cli), so both repos land side by side.
+      - uses: actions/checkout@v4
+        with:
+          path: tokitoki-windows
+      - uses: actions/checkout@v4
+        with:
+          repository: tokitoki-dev/tokitoki-cli
+          path: tokitoki-cli
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tokitoki-windows/go.mod
+
+      - name: Test
+        run: pwsh -NoProfile -File scripts/build.ps1 -Task test
+
+      - name: Build (amd64 smoke build)
+        run: pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch amd64
