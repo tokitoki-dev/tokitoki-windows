@@ -4,14 +4,27 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
+// setHome fakes the home directory for os.UserHomeDir, which reads
+// USERPROFILE on Windows and HOME everywhere else. Setting only HOME makes
+// these tests pass on macOS and silently probe the real home on Windows.
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	} else {
+		t.Setenv("HOME", dir)
+	}
+}
+
 func TestResolveUsesExistingProviderDirs(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	claude := filepath.Join(home, ".claude")
 	if err := mkdir(claude); err != nil {
 		t.Fatal(err)
@@ -28,7 +41,7 @@ func TestResolveUsesExistingProviderDirs(t *testing.T) {
 
 func TestWatchPathsDedupesAndSorts(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	claude := filepath.Join(home, ".claude")
 	codex := filepath.Join(home, ".codex")
 	if err := mkdir(codex); err != nil {
