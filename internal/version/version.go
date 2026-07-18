@@ -1,7 +1,5 @@
-// Package version contains build metadata shown in the Windows settings panel.
+// Package version contains release and build metadata for the Windows app.
 package version
-
-import "fmt"
 
 var (
 	// Version is the release version injected by the build.
@@ -16,8 +14,5 @@ var (
 
 // Summary returns a compact user-facing version string.
 func Summary() string {
-	if Commit == "" || Commit == "local" {
-		return fmt.Sprintf("Version %s", Version)
-	}
-	return fmt.Sprintf("Version %s (%s)", Version, Commit)
+	return "Version " + Version
 }

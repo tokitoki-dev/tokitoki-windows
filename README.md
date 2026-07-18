@@ -18,6 +18,15 @@ tokitoki-windows.exe
 The Windows client does not bundle or spawn a separate agent process. It builds
 one executable and shares the same `~/.tokitoki` state as the CLI.
 
+All server access uses `TOKITOKI_BASE_URL` and defaults to
+`https://tokitoki.dev`. Override it before starting the app when testing a
+local or staging server:
+
+```powershell
+$env:TOKITOKI_BASE_URL = "http://localhost:9093"
+.\tokitoki-windows.exe
+```
+
 ## Source layout
 
 This project imports the agent library through this local replacement:
