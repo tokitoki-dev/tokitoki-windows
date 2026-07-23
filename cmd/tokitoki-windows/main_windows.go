@@ -10,12 +10,14 @@ import (
 	"syscall"
 
 	"github.com/tokitoki-dev/tokitoki-windows/internal/app"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/instance"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/ui"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	appupdate.CleanupLeftovers()
 	lock, acquired, err := instance.Acquire()
 	if err != nil {
 		logger.Error("acquire instance lock", "error", err)
@@ -44,5 +46,17 @@ func main() {
 	if err := ui.Run(ctx, trayApp, logger); err != nil {
 		logger.Error("run ui", "error", err)
 		os.Exit(1)
+	}
+
+	// An accepted update restart: the new process may only be spawned after
+	// this one has released the instance lock, or it would see a live
+	// instance and quit. Stop and Close are idempotent, so the deferred
+	// calls above stay harmless.
+	if target, ok := ui.PendingRestart(); ok {
+		trayApp.Stop()
+		_ = lock.Close()
+		if err := appupdate.Relaunch(target); err != nil {
+			logger.Error("relaunch after update", "error", err)
+		}
 	}
 }

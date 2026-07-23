@@ -53,7 +53,8 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		return err
 	}
 
-	if err := buildMenu(mainWindow, notifyIcon, trayApp, logger); err != nil {
+	up := newUpdater(mainWindow, notifyIcon, logger)
+	if err := buildMenu(mainWindow, notifyIcon, trayApp, up, logger); err != nil {
 		return err
 	}
 	notifyIcon.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
@@ -91,16 +92,17 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		}
 		lightTaskbar = light
 	})
-	showStartupUI(mainWindow, notifyIcon, trayApp, logger)
+	showStartupUI(mainWindow, notifyIcon, trayApp, up, logger)
+	go up.run(ctx)
 
 	mainWindow.Run()
 	return nil
 }
 
-func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) {
+func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, up *updater, logger *slog.Logger) {
 	if _, err := trayApp.APIKey(); errors.Is(err, agentlib.ErrMissingAPIKey) {
 		_ = notifyIcon.ShowInfo("Tokitoki setup required", "Paste your API key to start syncing.")
-		showSettings(owner, trayApp)
+		showSettings(owner, trayApp, up)
 		return
 	} else if err != nil {
 		logger.Warn("check api key", "error", err)
@@ -108,7 +110,7 @@ func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp 
 	}
 }
 
-func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) error {
+func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, up *updater, logger *slog.Logger) error {
 	menu := notifyIcon.ContextMenu()
 
 	// The tracking switch leads the menu, as on macOS: pausing the app is the
@@ -137,7 +139,7 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 	if err := addAction(menu, "Dashboard", func() { openDashboard(owner, trayApp) }); err != nil {
 		return err
 	}
-	if err := addAction(menu, "Settings", func() { showSettings(owner, trayApp) }); err != nil {
+	if err := addAction(menu, "Settings", func() { showSettings(owner, trayApp, up) }); err != nil {
 		return err
 	}
 	if err := menu.Actions().Add(walk.NewSeparatorAction()); err != nil {
@@ -158,7 +160,7 @@ func addAction(menu *walk.Menu, text string, handler func()) error {
 	return menu.Actions().Add(action)
 }
 
-func showSettings(owner walk.Form, trayApp *coreapp.App) {
+func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	apiKey, err := trayApp.APIKey()
 	if err != nil && !errors.Is(err, agentlib.ErrMissingAPIKey) {
 		showError(owner, "Settings", err)
@@ -227,7 +229,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 					AssignTo: &checkUpdatesButton,
 					Text:     "Check for updates",
 					OnClicked: func() {
-						runUpdateCheck(dialog, checkUpdatesButton)
+						runUpdateCheck(dialog, checkUpdatesButton, up)
 					},
 				},
 			},
@@ -310,13 +312,17 @@ func runKeyVerification(dialog *walk.Dialog, button *walk.PushButton, status *wa
 }
 
 // runUpdateCheck asks the server for a newer build off the UI thread, then
-// reports back on it. A "yes" on the offer opens the download in the browser —
-// the app never replaces its own running executable.
-func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton) {
+// reports back on it. The user asked, so every outcome gets an answer —
+// unlike the background check, which only speaks up for news. A "yes" on the
+// offer hands over to the shared install pipeline.
+func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton, up *updater) {
 	button.SetEnabled(false)
 	go func() {
 		update, err := appupdate.Check(context.Background(), agentlib.BaseURL(), version.Version)
 		owner.Synchronize(func() {
+			if owner.IsDisposed() {
+				return
+			}
 			button.SetEnabled(true)
 			switch {
 			case errors.Is(err, appupdate.ErrDevBuild):
@@ -330,16 +336,7 @@ func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton) {
 					fmt.Sprintf("You're up to date (%s).", version.Summary()),
 					walk.MsgBoxIconInformation|walk.MsgBoxOK)
 			default:
-				answer := walk.MsgBox(owner, "Updates",
-					fmt.Sprintf("Version %s is available. Download it now?", update.Version),
-					walk.MsgBoxIconQuestion|walk.MsgBoxYesNo)
-				if answer == walk.DlgCmdYes {
-					verb := syscall.StringToUTF16Ptr("open")
-					target := syscall.StringToUTF16Ptr(update.DownloadURL)
-					if !win.ShellExecute(owner.Handle(), verb, target, nil, nil, win.SW_SHOWNORMAL) {
-						showError(owner, "Updates", fmt.Errorf("open %s failed", update.DownloadURL))
-					}
-				}
+				up.offerInstall(owner, update)
 			}
 		})
 	}()
