@@ -70,15 +70,20 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		})
 	}()
 
-	if err := notifyIcon.SetVisible(true); err != nil {
+	// walk owns the shell registration; we only supply a theme-aware glyph
+	// through its standard SetIcon path and keep it in sync with the taskbar
+	// theme. The mark is monochrome and rendered on the fly: white on the
+	// default dark taskbar, dark on a light one.
+	lightTaskbar := taskbarUsesLightTheme()
+	trayIcon, err := newTrayIcon(notifyIcon.DPI(), lightTaskbar)
+	if err != nil {
 		return err
 	}
-	// walk's own registration does not survive current Windows 11 shells;
-	// re-register with a full NOTIFYICONDATA and keep the glyph in sync
-	// with the taskbar theme. The glyph is monochrome and rendered on the
-	// fly: white on the default dark taskbar, dark on a light one.
-	lightTaskbar := taskbarUsesLightTheme()
-	if err := registerTrayIcon(mainWindow.Handle(), lightTaskbar, "Tokitoki"); err != nil {
+	defer func() { trayIcon.Dispose() }()
+	if err := notifyIcon.SetIcon(trayIcon); err != nil {
+		return err
+	}
+	if err := notifyIcon.SetVisible(true); err != nil {
 		return err
 	}
 	watchTaskbarTheme(mainWindow.Handle(), func() {
@@ -86,10 +91,19 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		if light == lightTaskbar {
 			return
 		}
-		if err := updateTrayIcon(mainWindow.Handle(), light); err != nil {
+		next, err := newTrayIcon(notifyIcon.DPI(), light)
+		if err != nil {
 			logger.Warn("update tray icon", "error", err)
 			return
 		}
+		if err := notifyIcon.SetIcon(next); err != nil {
+			logger.Warn("update tray icon", "error", err)
+			next.Dispose()
+			return
+		}
+		// next is now walk's icon; the previous one is safe to release.
+		trayIcon.Dispose()
+		trayIcon = next
 		lightTaskbar = light
 	})
 	showStartupUI(mainWindow, notifyIcon, trayApp, up, logger)
