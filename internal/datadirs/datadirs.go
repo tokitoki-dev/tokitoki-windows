@@ -10,6 +10,13 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
+// allProviders is every local AI client this app can track. As on macOS,
+// there is no provider selection: all of them, always.
+var allProviders = []string{
+	"claude", "codex", "copilot", "gemini", "kimi", "qwen", "openclaw",
+	"pi", "amp", "droid", "kilo", "hermes", "codebuff", "opencode", "goose",
+}
+
 // Directories contains selected provider directories.
 type Directories struct {
 	ProviderDirs map[agentlib.Provider][]string
@@ -20,10 +27,10 @@ func (d Directories) SyncOptions() agentlib.SyncOptions {
 	return agentlib.SyncOptions{ProviderDirs: d.ProviderDirs}
 }
 
-// Resolve returns existing provider directories for providers.
-func Resolve(providers []string) Directories {
+// Resolve returns the existing data directory of every known provider.
+func Resolve() Directories {
 	dirs := Directories{ProviderDirs: make(map[agentlib.Provider][]string)}
-	for _, provider := range providers {
+	for _, provider := range allProviders {
 		if path := firstExistingPath(paths(provider)); path != "" {
 			dirs.ProviderDirs[agentlib.Provider(provider)] = []string{path}
 		}
@@ -31,10 +38,10 @@ func Resolve(providers []string) Directories {
 	return dirs
 }
 
-// WatchPaths returns existing directories to watch for providers.
-func WatchPaths(providers []string) []string {
+// WatchPaths returns the existing directories to watch across all providers.
+func WatchPaths() []string {
 	seen := map[string]bool{}
-	for _, provider := range providers {
+	for _, provider := range allProviders {
 		for _, path := range paths(provider) {
 			if dir := existingWatchDir(path); dir != "" {
 				seen[dir] = true
@@ -96,7 +103,14 @@ func claudePaths() []string {
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(home, ".claude")}
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg == "" {
+		xdg = filepath.Join(home, ".config")
+	}
+	return []string{
+		filepath.Join(home, ".claude"),
+		filepath.Join(xdg, "claude"),
+	}
 }
 
 func codexPaths() []string {

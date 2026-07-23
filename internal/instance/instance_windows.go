@@ -5,7 +5,7 @@ package instance
 
 import "golang.org/x/sys/windows"
 
-const mutexName = `Local\TokiTokiWindowsTray`
+const mutexName = `Local\TokitokiWindowsTray`
 
 // Lock owns the Windows named mutex that marks the running tray instance.
 type Lock struct {

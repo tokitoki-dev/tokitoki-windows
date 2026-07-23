@@ -14,7 +14,7 @@ import (
 
 const (
 	runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
-	valueName  = "TokiToki"
+	valueName  = "Tokitoki"
 )
 
 // IsEnabled reports whether the current executable is registered for login.

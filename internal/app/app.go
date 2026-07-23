@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -23,15 +24,14 @@ const (
 
 // App owns the long-lived Windows client services.
 type App struct {
-	client       *agentlib.Client
-	settings     *settings.Store
-	syncer       *syncer.Syncer
-	watcher      *watcher.Watcher
-	logger       *slog.Logger
-	providerLock sync.RWMutex
-	providers    []string
-	tracking     bool
-	ctx          context.Context
+	client     *agentlib.Client
+	settings   *settings.Store
+	syncer     *syncer.Syncer
+	watcher    *watcher.Watcher
+	logger     *slog.Logger
+	trackingMu sync.RWMutex
+	tracking   bool
+	ctx        context.Context
 }
 
 // New creates an App.
@@ -63,7 +63,6 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.setProviders(config.EnabledProviders)
 	a.setTracking(!config.TrackingDisabled)
 
 	a.syncer.Start(ctx)
@@ -82,17 +81,10 @@ func (a *App) Stop() {
 	}
 }
 
-// EnabledProviders returns selected providers.
-func (a *App) EnabledProviders() []string {
-	a.providerLock.RLock()
-	defer a.providerLock.RUnlock()
-	return append([]string{}, a.providers...)
-}
-
 // TrackingEnabled reports whether monitoring and syncing are active.
 func (a *App) TrackingEnabled() bool {
-	a.providerLock.RLock()
-	defer a.providerLock.RUnlock()
+	a.trackingMu.RLock()
+	defer a.trackingMu.RUnlock()
 	return a.tracking
 }
 
@@ -100,7 +92,7 @@ func (a *App) TrackingEnabled() bool {
 // filesystem monitoring and makes sync runs no-ops, on resumes both and
 // syncs immediately to catch up on whatever happened while paused.
 func (a *App) SetTrackingEnabled(enabled bool) error {
-	if err := a.saveSettings(a.EnabledProviders(), enabled); err != nil {
+	if err := a.settings.Save(settings.Settings{TrackingDisabled: !enabled}); err != nil {
 		return err
 	}
 	a.setTracking(enabled)
@@ -149,47 +141,37 @@ func (a *App) SetAPIKey(apiKey string) error {
 	return nil
 }
 
-// RestartMonitoring restarts filesystem monitoring for enabled providers.
-// With tracking off there is nothing to watch: Start with no paths just
-// stops the current watcher.
+// RestartMonitoring restarts filesystem monitoring. With tracking off there
+// is nothing to watch: Start with no paths just stops the current watcher.
 func (a *App) RestartMonitoring() error {
 	if a.ctx == nil {
 		return nil
 	}
 	var paths []string
 	if a.TrackingEnabled() {
-		paths = datadirs.WatchPaths(a.EnabledProviders())
+		paths = datadirs.WatchPaths()
 	}
 	return a.watcher.Start(a.ctx, paths)
 }
 
-// syncOptions resolves what a sync run should scan. Tracking off means
-// nothing — the syncer already treats an empty provider set as a no-op, so
-// the pause needs no second mechanism.
+// syncOptions resolves what a sync run should scan. Tracking off — or no API
+// key yet, as on macOS — means nothing: the syncer already treats an empty
+// provider set as a no-op, so neither pause needs a second mechanism.
 func (a *App) syncOptions() agentlib.SyncOptions {
 	if !a.TrackingEnabled() {
 		return agentlib.SyncOptions{}
 	}
-	return datadirs.Resolve(a.EnabledProviders()).SyncOptions()
-}
-
-func (a *App) setProviders(providers []string) {
-	a.providerLock.Lock()
-	defer a.providerLock.Unlock()
-	a.providers = append([]string{}, providers...)
+	if _, err := a.client.GetAPIKey(); err != nil {
+		if !errors.Is(err, agentlib.ErrMissingAPIKey) {
+			a.logger.Warn("check api key", "error", err)
+		}
+		return agentlib.SyncOptions{}
+	}
+	return datadirs.Resolve().SyncOptions()
 }
 
 func (a *App) setTracking(enabled bool) {
-	a.providerLock.Lock()
-	defer a.providerLock.Unlock()
+	a.trackingMu.Lock()
+	defer a.trackingMu.Unlock()
 	a.tracking = enabled
-}
-
-// saveSettings persists the full preference set. Every caller passes both
-// fields so a toggle can never clobber the provider list and vice versa.
-func (a *App) saveSettings(providers []string, tracking bool) error {
-	return a.settings.Save(settings.Settings{
-		EnabledProviders: providers,
-		TrackingDisabled: !tracking,
-	})
 }

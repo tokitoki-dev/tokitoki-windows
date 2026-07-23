@@ -20,6 +20,10 @@ func setHome(t *testing.T, dir string) {
 	} else {
 		t.Setenv("HOME", dir)
 	}
+	// The machine running the tests may point these anywhere; the fake home
+	// must fully control what exists.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 }
 
 func TestResolveUsesExistingProviderDirs(t *testing.T) {
@@ -30,7 +34,7 @@ func TestResolveUsesExistingProviderDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := Resolve([]string{"claude", "codex"})
+	got := Resolve()
 	if dirs := got.ProviderDirs[agentlib.ProviderClaude]; len(dirs) != 1 || dirs[0] != claude {
 		t.Fatalf("claude dirs = %v, want %q", dirs, claude)
 	}
@@ -51,14 +55,29 @@ func TestWatchPathsDedupesAndSorts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := WatchPaths([]string{"codex", "claude", "codex"})
+	got := WatchPaths()
 	want := []string{claude, codex}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("WatchPaths() = %v, want %v", got, want)
 	}
 }
 
+func TestClaudePathsIncludeXDGConfigDir(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	xdgClaude := filepath.Join(home, ".config", "claude")
+	if err := mkdir(xdgClaude); err != nil {
+		t.Fatal(err)
+	}
+
+	got := WatchPaths()
+	if !reflect.DeepEqual(got, []string{xdgClaude}) {
+		t.Fatalf("WatchPaths() = %v, want XDG claude dir", got)
+	}
+}
+
 func TestClaudeConfigDirTrimsProjects(t *testing.T) {
+	setHome(t, t.TempDir())
 	root := t.TempDir()
 	configured := filepath.Join(root, "projects")
 	if err := mkdir(configured); err != nil {
@@ -66,13 +85,14 @@ func TestClaudeConfigDirTrimsProjects(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", configured)
 
-	got := WatchPaths([]string{"claude"})
+	got := WatchPaths()
 	if !reflect.DeepEqual(got, []string{root}) {
 		t.Fatalf("WatchPaths() = %v, want root without projects", got)
 	}
 }
 
 func TestCopilotExporterFilePathIsResolvedAndWatchedByParent(t *testing.T) {
+	setHome(t, t.TempDir())
 	dir := t.TempDir()
 	file := filepath.Join(dir, "copilot.jsonl")
 	if err := os.WriteFile(file, []byte("{}\n"), 0o600); err != nil {
@@ -80,11 +100,11 @@ func TestCopilotExporterFilePathIsResolvedAndWatchedByParent(t *testing.T) {
 	}
 	t.Setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", file)
 
-	resolved := Resolve([]string{"copilot"})
+	resolved := Resolve()
 	if dirs := resolved.ProviderDirs[agentlib.ProviderCopilot]; len(dirs) != 1 || dirs[0] != file {
 		t.Fatalf("copilot dirs = %v, want exporter file", dirs)
 	}
-	if got := WatchPaths([]string{"copilot"}); !reflect.DeepEqual(got, []string{dir}) {
+	if got := WatchPaths(); !reflect.DeepEqual(got, []string{dir}) {
 		t.Fatalf("WatchPaths() = %v, want exporter parent dir", got)
 	}
 }

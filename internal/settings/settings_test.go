@@ -1,8 +1,8 @@
 package settings
 
 import (
+	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -13,43 +13,16 @@ func TestStoreDefaultsWhenFileMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got.EnabledProviders, KnownProviders()) {
-		t.Fatalf("EnabledProviders = %v, want defaults", got.EnabledProviders)
-	}
-}
-
-func TestStoreSavesNormalizedProviders(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-
-	err := store.Save(Settings{EnabledProviders: []string{"unknown", "codex", "codex"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got.EnabledProviders, []string{"codex"}) {
-		t.Fatalf("EnabledProviders = %v, want normalized codex", got.EnabledProviders)
-	}
-	if filepath.Dir(store.path) != dir {
-		t.Fatalf("store path = %q, want inside data dir", store.path)
-	}
-}
-
-func TestStoreRejectsEmptyProviders(t *testing.T) {
-	store := NewStore(t.TempDir())
-
-	if err := store.Save(Settings{}); err == nil {
-		t.Fatal("Save() error = nil, want empty provider rejection")
+	if got.TrackingDisabled {
+		t.Fatal("TrackingDisabled = true, want default false")
 	}
 }
 
 func TestStoreRoundTripsTrackingDisabled(t *testing.T) {
-	store := NewStore(t.TempDir())
+	dir := t.TempDir()
+	store := NewStore(dir)
 
-	if err := store.Save(Settings{EnabledProviders: []string{"claude"}, TrackingDisabled: true}); err != nil {
+	if err := store.Save(Settings{TrackingDisabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.Load()
@@ -59,9 +32,11 @@ func TestStoreRoundTripsTrackingDisabled(t *testing.T) {
 	if !got.TrackingDisabled {
 		t.Fatal("TrackingDisabled = false, want persisted true")
 	}
+	if filepath.Dir(store.path) != dir {
+		t.Fatalf("store path = %q, want inside data dir", store.path)
+	}
 
-	// A pre-existing settings file without the field means tracking on.
-	if err := store.Save(Settings{EnabledProviders: []string{"claude"}}); err != nil {
+	if err := store.Save(Settings{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = store.Load()
@@ -70,5 +45,22 @@ func TestStoreRoundTripsTrackingDisabled(t *testing.T) {
 	}
 	if got.TrackingDisabled {
 		t.Fatal("TrackingDisabled = true, want default false")
+	}
+}
+
+func TestStoreIgnoresLegacyProviderList(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	legacy := []byte(`{"enabled_providers":["codex"],"tracking_disabled":true}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, fileName), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TrackingDisabled {
+		t.Fatal("TrackingDisabled = false, want value from legacy file")
 	}
 }

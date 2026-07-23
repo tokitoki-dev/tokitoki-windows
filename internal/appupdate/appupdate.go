@@ -1,4 +1,4 @@
-// Package appupdate asks the TokiToki server whether a newer Windows app
+// Package appupdate asks the Tokitoki server whether a newer Windows app
 // build exists. It only answers the question — the download itself happens in
 // the user's browser, so the app never has to swap its own running executable.
 package appupdate
@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Channel is the release channel the Windows app reads on the TokiToki server.
+// Channel is the release channel the Windows app reads on the Tokitoki server.
 const Channel = "windows"
 
 const checkTimeout = 15 * time.Second

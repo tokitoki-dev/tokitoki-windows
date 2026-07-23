@@ -4,9 +4,9 @@
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="*"
-    name="TokiToki.Windows"
+    name="Tokitoki.Windows"
     type="win32" />
-  <description>TokiToki Windows</description>
+  <description>Tokitoki Windows</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

@@ -1,6 +1,6 @@
-# TokiToki Windows
+# Tokitoki Windows
 
-A native Windows tray app for TokiToki. The app is a small Go executable that
+A native Windows tray app for Tokitoki. The app is a small Go executable that
 uses the shared `github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib` package for local
 AI usage scanning and upload.
 

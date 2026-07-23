@@ -27,6 +27,23 @@ func enableProcessDPIAwareness() {
 	procSetProcessDPIContext.Call(dpiAwarenessContextPerMonitorAwareV2)
 }
 
+var themeWatchPrevProc uintptr
+
+// watchTaskbarTheme invokes onChange on every WM_SETTINGCHANGE broadcast —
+// the message a theme flip arrives as on each top-level window. The callback
+// must therefore be cheap and idempotent; deciding whether anything actually
+// changed is its job. walk offers no hook for arbitrary messages, so the
+// hidden main window's proc is chained. onChange runs on the UI thread.
+func watchTaskbarTheme(hwnd win.HWND, onChange func()) {
+	callback := syscall.NewCallback(func(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
+		if msg == win.WM_SETTINGCHANGE {
+			onChange()
+		}
+		return win.CallWindowProc(themeWatchPrevProc, hwnd, msg, wParam, lParam)
+	})
+	themeWatchPrevProc = win.SetWindowLongPtr(hwnd, win.GWLP_WNDPROC, callback)
+}
+
 func enableDarkTitleBar(hwnd win.HWND) {
 	enabled := int32(1)
 	procDwmSetWindowAttrib.Call(

@@ -11,14 +11,15 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/lxn/walk"
+	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/apikey"
 	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/version"
-	"github.com/lxn/walk"
-	. "github.com/lxn/walk/declarative"
-	"github.com/lxn/win"
 )
 
 // Run starts the Windows message loop.
@@ -29,7 +30,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	mainWindow.SetTitle("TokiToki")
+	mainWindow.SetTitle("Tokitoki")
 	mainWindow.SetVisible(false)
 	applyWindowTheme(mainWindow.Handle())
 
@@ -48,10 +49,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	}
 	defer notifyIcon.Dispose()
 
-	if err := notifyIcon.SetIcon(icon); err != nil {
-		return err
-	}
-	if err := notifyIcon.SetToolTip("TokiToki"); err != nil {
+	if err := notifyIcon.SetToolTip("Tokitoki"); err != nil {
 		return err
 	}
 
@@ -74,6 +72,25 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	if err := notifyIcon.SetVisible(true); err != nil {
 		return err
 	}
+	// walk's own registration does not survive current Windows 11 shells;
+	// re-register with a full NOTIFYICONDATA and keep the glyph in sync
+	// with the taskbar theme. The glyph is monochrome and rendered on the
+	// fly: white on the default dark taskbar, dark on a light one.
+	lightTaskbar := taskbarUsesLightTheme()
+	if err := registerTrayIcon(mainWindow.Handle(), lightTaskbar, "Tokitoki"); err != nil {
+		return err
+	}
+	watchTaskbarTheme(mainWindow.Handle(), func() {
+		light := taskbarUsesLightTheme()
+		if light == lightTaskbar {
+			return
+		}
+		if err := updateTrayIcon(mainWindow.Handle(), light); err != nil {
+			logger.Warn("update tray icon", "error", err)
+			return
+		}
+		lightTaskbar = light
+	})
 	showStartupUI(mainWindow, notifyIcon, trayApp, logger)
 
 	mainWindow.Run()
@@ -82,12 +99,12 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 
 func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, logger *slog.Logger) {
 	if _, err := trayApp.APIKey(); errors.Is(err, agentlib.ErrMissingAPIKey) {
-		_ = notifyIcon.ShowInfo("TokiToki setup required", "Paste your API key to start syncing.")
+		_ = notifyIcon.ShowInfo("Tokitoki setup required", "Paste your API key to start syncing.")
 		showSettings(owner, trayApp)
 		return
 	} else if err != nil {
 		logger.Warn("check api key", "error", err)
-		_ = notifyIcon.ShowWarning("TokiToki setup check failed", truncateStatus(err.Error()))
+		_ = notifyIcon.ShowWarning("Tokitoki setup check failed", truncateStatus(err.Error()))
 	}
 }
 
@@ -126,7 +143,7 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 	if err := menu.Actions().Add(walk.NewSeparatorAction()); err != nil {
 		return err
 	}
-	return addAction(menu, "Quit", func() {
+	return addAction(menu, "Quit Tokitoki", func() {
 		logger.Info("quit requested")
 		walk.App().Exit(0)
 	})
@@ -150,6 +167,8 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	var dialog *walk.Dialog
 	var apiKeyEdit *walk.LineEdit
 	var launchAtLogin *walk.CheckBox
+	var verifyButton *walk.PushButton
+	var verifyStatus *walk.Label
 
 	var checkUpdatesButton *walk.PushButton
 	children := []Widget{
@@ -161,6 +180,28 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 			AssignTo:  &apiKeyEdit,
 			Text:      apiKey,
 			CueBanner: "Paste your API key",
+			OnTextChanged: func() {
+				// A changed key invalidates the previous answer, as on macOS.
+				_ = verifyStatus.SetText("")
+				verifyButton.SetEnabled(strings.TrimSpace(apiKeyEdit.Text()) != "")
+			},
+		},
+		Composite{
+			Layout: HBox{MarginsZero: true, Spacing: 8},
+			Children: []Widget{
+				PushButton{
+					AssignTo:    &verifyButton,
+					Text:        "Verify Key",
+					Enabled:     strings.TrimSpace(apiKey) != "",
+					ToolTipText: "Check this key with the Tokitoki server",
+					OnClicked: func() {
+						runKeyVerification(dialog, verifyButton, verifyStatus,
+							strings.TrimSpace(apiKeyEdit.Text()))
+					},
+				},
+				Label{AssignTo: &verifyStatus},
+				HSpacer{},
+			},
 		},
 	}
 	children = append(children,
@@ -237,6 +278,35 @@ func showSettings(owner walk.Form, trayApp *coreapp.App) {
 	if err != nil {
 		showError(owner, "Settings", err)
 	}
+}
+
+// runKeyVerification checks the entered key with the server off the UI
+// thread, then reports the answer next to the button. Three outcomes, as on
+// macOS: valid, invalid, or "the server could not say" — which is not a
+// verdict on the key.
+func runKeyVerification(dialog *walk.Dialog, button *walk.PushButton, status *walk.Label, key string) {
+	if key == "" {
+		return
+	}
+	button.SetEnabled(false)
+	_ = status.SetText("Verifying…")
+	go func() {
+		valid, err := apikey.NewVerifier(agentlib.BaseURL()).Verify(context.Background(), key)
+		dialog.Synchronize(func() {
+			if dialog.IsDisposed() {
+				return
+			}
+			button.SetEnabled(true)
+			switch {
+			case err != nil:
+				_ = status.SetText("⚠ Couldn't verify the key. Try again.")
+			case valid:
+				_ = status.SetText("✓ Key is valid.")
+			default:
+				_ = status.SetText("✗ Key is invalid or has been revoked.")
+			}
+		})
+	}()
 }
 
 // runUpdateCheck asks the server for a newer build off the UI thread, then

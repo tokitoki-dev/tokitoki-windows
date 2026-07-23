@@ -13,34 +13,18 @@ import (
 
 const fileName = "windows-settings.json"
 
-var knownProviders = []string{
-	"claude",
-	"codex",
-	"copilot",
-	"gemini",
-	"kimi",
-	"qwen",
-	"openclaw",
-	"pi",
-	"amp",
-	"droid",
-	"kilo",
-	"hermes",
-	"codebuff",
-	"opencode",
-	"goose",
-}
-
-// Settings contains Windows client preferences.
+// Settings contains Windows client preferences. Provider selection does not
+// exist — as on macOS, every known provider is always tracked — so the file
+// carries only the tracking switch. Legacy files with an enabled_providers
+// list still parse; the list is ignored.
 type Settings struct {
-	EnabledProviders []string `json:"enabled_providers"`
 	// TrackingDisabled pauses all monitoring and syncing. Stored inverted so
 	// the zero value — and every settings file written before the field
 	// existed — means "tracking on", the default.
 	TrackingDisabled bool `json:"tracking_disabled,omitempty"`
 }
 
-// Store reads and writes settings under the shared TokiToki data directory.
+// Store reads and writes settings under the shared Tokitoki data directory.
 type Store struct {
 	path string
 	mu   sync.Mutex
@@ -59,7 +43,7 @@ func (s *Store) Load() (Settings, error) {
 
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Default(), nil
+		return Settings{}, nil
 	}
 	if err != nil {
 		return Settings{}, err
@@ -69,10 +53,6 @@ func (s *Store) Load() (Settings, error) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return Settings{}, err
 	}
-	settings.EnabledProviders = NormalizeProviders(settings.EnabledProviders)
-	if len(settings.EnabledProviders) == 0 {
-		settings.EnabledProviders = Default().EnabledProviders
-	}
 	return settings, nil
 }
 
@@ -81,10 +61,6 @@ func (s *Store) Save(settings Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	settings.EnabledProviders = NormalizeProviders(settings.EnabledProviders)
-	if len(settings.EnabledProviders) == 0 {
-		return errors.New("at least one provider must be enabled")
-	}
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
@@ -115,34 +91,7 @@ func (s *Store) Save(settings Settings) error {
 	return os.Rename(tmpPath, s.path)
 }
 
-// Default returns the default Windows client settings.
-func Default() Settings {
-	return Settings{EnabledProviders: KnownProviders()}
-}
-
-// KnownProviders returns the canonical provider order.
-func KnownProviders() []string {
-	return append([]string{}, knownProviders...)
-}
-
-// NormalizeProviders removes unknown and duplicate providers while preserving
-// the canonical provider order.
-func NormalizeProviders(providers []string) []string {
-	enabled := make(map[string]bool, len(providers))
-	for _, provider := range providers {
-		enabled[provider] = true
-	}
-
-	var normalized []string
-	for _, provider := range knownProviders {
-		if enabled[provider] {
-			normalized = append(normalized, provider)
-		}
-	}
-	return normalized
-}
-
-// DataDir returns the default shared TokiToki data directory.
+// DataDir returns the default shared Tokitoki data directory.
 func DataDir() (string, error) {
 	return agentlib.DefaultDataDir()
 }
