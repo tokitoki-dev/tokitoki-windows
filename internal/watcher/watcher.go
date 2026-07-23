@@ -12,6 +12,17 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// watchBufferSize is the per-directory ReadDirectoryChangesW buffer fsnotify
+// allocates on Windows. Its default is 64 KiB, and a recursive watch adds
+// every subdirectory separately — a provider like Codex has thousands, so the
+// default costs hundreds of megabytes of committed buffers for nothing. These
+// are append-only session-log trees with low event rates, and a debounced
+// full sync coalesces whatever arrives, so 8 KiB (≈80 events between reads)
+// is ample; a rare overflow only defers a sync to the next event or the
+// periodic run, never loses data. On non-Windows backends this option is
+// ignored.
+const watchBufferSize = 8 << 10
+
 // Watcher manages one recursive fsnotify watcher.
 type Watcher struct {
 	debounce time.Duration
@@ -143,6 +154,6 @@ func addRecursive(fsWatcher *fsnotify.Watcher, root string) error {
 		if !entry.IsDir() {
 			return nil
 		}
-		return fsWatcher.Add(path)
+		return fsWatcher.AddWith(path, fsnotify.WithBufferSize(watchBufferSize))
 	})
 }
