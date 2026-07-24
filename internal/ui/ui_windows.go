@@ -228,16 +228,10 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 			AssignTo:  &apiKeyEdit,
 			Text:      apiKey,
 			CueBanner: "Paste your API key",
-			MinSize:   Size{Height: 26},
 			OnTextChanged: func() {
 				// A changed key invalidates the previous answer, as on macOS.
 				_ = verifyStatus.SetText("")
 				verifyButton.SetEnabled(strings.TrimSpace(apiKeyEdit.Text()) != "")
-			},
-			// Reshaping needs the control's final size, and layout runs after
-			// the tree is built — and again on every DPI or layout change.
-			OnSizeChanged: func() {
-				roundControlCorners(apiKeyEdit.Handle(), inputCornerRadius*dpi/96)
 			},
 		},
 		Composite{
@@ -332,10 +326,6 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		return
 	}
 	applyDialogTheme(dialog.Handle())
-	// The sunken 3D frame is drawn outside the client area, so the rounded
-	// region would cut it mid-curve; drop it and let the field read by its
-	// own background.
-	removeClientEdge(apiKeyEdit.Handle())
 	dialog.Run()
 }
 
