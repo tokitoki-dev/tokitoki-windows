@@ -40,6 +40,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	if err := mainWindow.SetLayout(walk.NewVBoxLayout()); err != nil {
 		return err
 	}
+	makeOwnerPhantom(mainWindow)
 	applyWindowTheme(mainWindow.Handle())
 
 	// A tray app outlives its windows. walk's default close disposes the

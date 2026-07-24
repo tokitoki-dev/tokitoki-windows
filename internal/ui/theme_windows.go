@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/lxn/walk"
 	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -23,7 +24,42 @@ var (
 	user32                   = syscall.NewLazyDLL("user32.dll")
 	procSetProcessDPIContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSPIForDpi            = user32.NewProc("SystemParametersInfoForDpi")
+	procSetLayeredWindowAttr = user32.NewProc("SetLayeredWindowAttributes")
 )
+
+// lwaAlpha selects the alpha argument of SetLayeredWindowAttributes.
+const lwaAlpha = 0x2
+
+// makeOwnerPhantom turns the tray's main window into an owner nobody sees. It
+// has to exist — it owns the dialogs and carries the tray's messages — but it
+// must never appear. walk re-shows a dialog's owner as that dialog closes and
+// enforces a minimum window size, so it cannot simply be shrunk out of sight;
+// it is made fully transparent instead, and kept out of the taskbar and the
+// focus order. Centering it also centers the dialogs, which walk positions
+// relative to their owner.
+func makeOwnerPhantom(form *walk.MainWindow) {
+	hwnd := form.Handle()
+	style := win.GetWindowLong(hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(hwnd, win.GWL_EXSTYLE, style|
+		win.WS_EX_LAYERED|win.WS_EX_TOOLWINDOW|win.WS_EX_TRANSPARENT|win.WS_EX_NOACTIVATE)
+	procSetLayeredWindowAttr.Call(uintptr(hwnd), 0, 0, lwaAlpha)
+
+	width := int(win.GetSystemMetrics(win.SM_CXSCREEN))
+	height := int(win.GetSystemMetrics(win.SM_CYSCREEN))
+	if width <= 0 || height <= 0 {
+		return
+	}
+	// Collapse to walk's enforced minimum, then center whatever that turns
+	// out to be.
+	_ = form.SetBoundsPixels(walk.Rectangle{X: width / 2, Y: height / 2, Width: 1, Height: 1})
+	bounds := form.BoundsPixels()
+	_ = form.SetBoundsPixels(walk.Rectangle{
+		X:      width/2 - bounds.Width/2,
+		Y:      height/2 - bounds.Height/2,
+		Width:  bounds.Width,
+		Height: bounds.Height,
+	})
+}
 
 func applyWindowTheme(hwnd win.HWND) {
 	applyDialogTheme(hwnd)
