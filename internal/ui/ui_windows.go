@@ -33,6 +33,13 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	}
 	mainWindow.SetTitle("Tokitoki")
 	mainWindow.SetVisible(false)
+	// This window is never shown, but it must still be layoutable: walk lays
+	// a form out on WM_WINDOWPOSCHANGED, and a closing dialog re-shows its
+	// owner, so a layout-less window panics on nil there and takes the
+	// process with it.
+	if err := mainWindow.SetLayout(walk.NewVBoxLayout()); err != nil {
+		return err
+	}
 	applyWindowTheme(mainWindow.Handle())
 
 	// A tray app outlives its windows. walk's default close disposes the
