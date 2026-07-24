@@ -12,6 +12,7 @@ import (
 	"github.com/tokitoki-dev/tokitoki-windows/internal/app"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/instance"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/ui"
 )
 
@@ -27,6 +28,13 @@ func main() {
 		return
 	}
 	defer lock.Close()
+
+	// If the app was moved, its launch-at-login entry still names the old
+	// path; point it back at where we actually run. Best-effort — a failure
+	// here only leaves autostart stale, it must not stop the app.
+	if err := launch.Reconcile(); err != nil {
+		logger.Warn("reconcile launch-at-login", "error", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

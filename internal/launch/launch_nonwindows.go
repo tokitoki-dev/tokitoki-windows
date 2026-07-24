@@ -12,3 +12,8 @@ func IsEnabled() bool {
 func SetEnabled(enabled bool) error {
 	return nil
 }
+
+// Reconcile repoints a stale launch-at-login entry at the current executable.
+func Reconcile() error {
+	return nil
+}
