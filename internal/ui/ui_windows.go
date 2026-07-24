@@ -58,9 +58,11 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	if err := buildMenu(mainWindow, notifyIcon, trayApp, up, logger); err != nil {
 		return err
 	}
+	// Left click opens Settings; the Dashboard stays a deliberate choice from
+	// the right-click menu, since it leaves for the browser.
 	notifyIcon.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
 		if button == walk.LeftButton {
-			openDashboard(mainWindow, trayApp)
+			showSettings(mainWindow, trayApp, up)
 		}
 	})
 
@@ -176,7 +178,18 @@ func addAction(menu *walk.Menu, text string, handler func()) error {
 	return menu.Actions().Add(action)
 }
 
+// settingsOpen guards against stacking dialogs. A tray click is far easier to
+// repeat than a menu item, and every path here runs on the UI thread, so a
+// plain flag is enough.
+var settingsOpen bool
+
 func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
+	if settingsOpen {
+		return
+	}
+	settingsOpen = true
+	defer func() { settingsOpen = false }()
+
 	apiKey, err := trayApp.APIKey()
 	if err != nil && !errors.Is(err, agentlib.ErrMissingAPIKey) {
 		showError(owner, "Couldn't load settings", err)
@@ -215,10 +228,16 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 			AssignTo:  &apiKeyEdit,
 			Text:      apiKey,
 			CueBanner: "Paste your API key",
+			MinSize:   Size{Height: 26},
 			OnTextChanged: func() {
 				// A changed key invalidates the previous answer, as on macOS.
 				_ = verifyStatus.SetText("")
 				verifyButton.SetEnabled(strings.TrimSpace(apiKeyEdit.Text()) != "")
+			},
+			// Reshaping needs the control's final size, and layout runs after
+			// the tree is built — and again on every DPI or layout change.
+			OnSizeChanged: func() {
+				roundControlCorners(apiKeyEdit.Handle(), inputCornerRadius*dpi/96)
 			},
 		},
 		Composite{
@@ -238,16 +257,16 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 				HSpacer{},
 			},
 		},
+		separatorLine(),
 	}
 	muted := mutedTextColor()
 	children = append(children,
-		HSeparator{},
 		settingRow(headerFont, muted, launchToggle,
 			"Launch at login", "Start automatically when you sign in"),
 		settingRow(headerFont, muted, updatesToggle,
 			"Automatic updates", "Check for new versions in the background"),
 		VSpacer{},
-		HSeparator{},
+		separatorLine(),
 		Composite{
 			Layout: HBox{MarginsZero: true, Spacing: 8},
 			Children: []Widget{
@@ -313,6 +332,10 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		return
 	}
 	applyDialogTheme(dialog.Handle())
+	// The sunken 3D frame is drawn outside the client area, so the rounded
+	// region would cut it mid-curve; drop it and let the field read by its
+	// own background.
+	removeClientEdge(apiKeyEdit.Handle())
 	dialog.Run()
 }
 

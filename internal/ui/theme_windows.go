@@ -23,7 +23,55 @@ var (
 	user32                   = syscall.NewLazyDLL("user32.dll")
 	procSetProcessDPIContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSPIForDpi            = user32.NewProc("SystemParametersInfoForDpi")
+	procSetWindowRgn         = user32.NewProc("SetWindowRgn")
+	gdi32                    = syscall.NewLazyDLL("gdi32.dll")
+	procCreateRoundRectRgn   = gdi32.NewProc("CreateRoundRectRgn")
 )
+
+// inputCornerRadius is the corner rounding of text fields, in 96dpi units.
+// Kept gentle: the region clip has no antialiasing, so a large radius would
+// show its stair-steps.
+const inputCornerRadius = 6
+
+// roundControlCorners clips a child control to a rounded rectangle. A Win32
+// edit control has no rounded-corner style, and DWM's corner preference
+// applies only to top-level windows, so the control's own region is reshaped
+// instead. GDI regions are not antialiased, which is why the radius stays
+// small — that is where the hard edge shows least.
+func roundControlCorners(hwnd win.HWND, radius int) {
+	var rect win.RECT
+	if !win.GetClientRect(hwnd, &rect) {
+		return
+	}
+	width := rect.Right - rect.Left
+	height := rect.Bottom - rect.Top
+	if width <= 0 || height <= 0 || radius <= 0 {
+		return
+	}
+
+	// CreateRoundRectRgn treats the lower-right corner as exclusive.
+	rgn, _, _ := procCreateRoundRectRgn.Call(
+		0, 0, uintptr(width+1), uintptr(height+1),
+		uintptr(radius), uintptr(radius),
+	)
+	if rgn == 0 {
+		return
+	}
+	// The window owns the region once SetWindowRgn succeeds; if it fails the
+	// region is still ours to free.
+	if ret, _, _ := procSetWindowRgn.Call(uintptr(hwnd), rgn, 1); ret == 0 {
+		win.DeleteObject(win.HGDIOBJ(rgn))
+	}
+}
+
+// removeClientEdge drops a control's sunken 3D border. Rounding the region
+// would otherwise slice that border off mid-curve, leaving cut corners.
+func removeClientEdge(hwnd win.HWND) {
+	style := win.GetWindowLong(hwnd, win.GWL_EXSTYLE)
+	win.SetWindowLong(hwnd, win.GWL_EXSTYLE, style&^win.WS_EX_CLIENTEDGE)
+	win.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+		win.SWP_NOMOVE|win.SWP_NOSIZE|win.SWP_NOZORDER|win.SWP_FRAMECHANGED)
+}
 
 func applyWindowTheme(hwnd win.HWND) {
 	applyDialogTheme(hwnd)

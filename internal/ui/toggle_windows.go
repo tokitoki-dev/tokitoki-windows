@@ -113,6 +113,26 @@ func mutedTextColor() walk.Color {
 	return walk.RGB(0xA1, 0xA1, 0xAA)
 }
 
+// separatorColor is the hairline that divides the dialog's sections.
+func separatorColor() walk.Color {
+	if appsUseLightTheme() {
+		return walk.RGB(0xE5, 0xE7, 0xEB)
+	}
+	return walk.RGB(0x3F, 0x3F, 0x46)
+}
+
+// separatorLine is a one-pixel rule. walk's own HSeparator draws the etched
+// system divider, which all but disappears against a dark dialog, so the line
+// is a filled strip instead and stays visible in either theme.
+func separatorLine() Widget {
+	return Composite{
+		Layout:     HBox{MarginsZero: true},
+		Background: SolidColorBrush{Color: separatorColor()},
+		MinSize:    Size{Height: 1},
+		MaxSize:    Size{Height: 1},
+	}
+}
+
 // settingRow lays out one preference the way the product design does: a bold
 // title over a muted description on the left, the switch pinned right.
 func settingRow(titleFont Font, muted walk.Color, t *toggle, title, description string) Widget {
