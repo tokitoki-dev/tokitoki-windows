@@ -5,6 +5,7 @@ package ui
 import (
 	"encoding/binary"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -81,10 +82,13 @@ type taskDialog struct {
 	icon        uintptr  // td*Icon, or 0 for none
 	links       []string // command links; empty means a plain OK dialog
 	marquee     bool     // indeterminate progress bar, with a Cancel button
-	onCancel    func()   // invoked when the Cancel button is clicked
+	onCancel    func()   // invoked when the user clicks Cancel
 
-	hwnd   win.HWND // set while on screen
-	closed bool     // close was requested, possibly before construction
+	// These three are touched from the worker goroutine in close() as well as
+	// from the UI thread in the callback, so they are atomic.
+	hwnd        atomic.Uintptr // window handle while on screen; 0 otherwise
+	closed      atomic.Bool    // close requested, maybe before construction
+	selfClosing atomic.Bool    // close() drove this dismissal, not the user
 }
 
 // activeTaskDialog is the dialog the shared callback delivers to. Written
@@ -98,18 +102,20 @@ var taskDialogCallback = syscall.NewCallback(func(hwnd, msg, wParam, lParam, ref
 	}
 	switch uint32(msg) {
 	case tdnDialogConstructed:
-		d.hwnd = win.HWND(hwnd)
-		applyDialogTheme(d.hwnd)
-		// The result may have arrived before the window existed.
-		if d.closed {
-			win.SendMessage(d.hwnd, tdmClickButton, idCancel, 0)
+		d.hwnd.Store(uintptr(hwnd))
+		applyDialogTheme(win.HWND(hwnd))
+		// close() may have run before the window existed; honor it now.
+		if d.closed.Load() {
+			win.PostMessage(win.HWND(hwnd), tdmClickButton, idCancel, 0)
 		}
 	case tdnCreated:
 		if d.marquee {
 			win.SendMessage(win.HWND(hwnd), tdmSetProgressBarMarquee, 1, 0)
 		}
 	case tdnButtonClicked:
-		if wParam == idCancel && d.onCancel != nil {
+		// A programmatic close also arrives as a Cancel click; only a real
+		// user click should cancel the work behind the dialog.
+		if wParam == idCancel && !d.selfClosing.Load() && d.onCancel != nil {
 			d.onCancel()
 		}
 	}
@@ -188,7 +194,7 @@ func (d *taskDialog) run() int {
 	activeTaskDialog = d
 	defer func() {
 		activeTaskDialog = prev
-		d.hwnd = 0
+		d.hwnd.Store(0)
 	}()
 
 	var pressed int32
@@ -212,12 +218,16 @@ func (d *taskDialog) run() int {
 	return -1
 }
 
-// close dismisses the dialog programmatically, as if Cancel were clicked. A
-// close before the window exists is honored on construction.
+// close dismisses the dialog from any goroutine. It is the worker's way to
+// take down the progress dialog when a download finishes: the dialog's own
+// modal loop is what pumps messages then, not walk's, so walk.Synchronize
+// would never run — but PostMessage reaches the dialog's loop directly. A
+// close requested before the window exists is honored on construction.
 func (d *taskDialog) close() {
-	d.closed = true
-	if d.hwnd != 0 {
-		win.SendMessage(d.hwnd, tdmClickButton, idCancel, 0)
+	d.selfClosing.Store(true)
+	d.closed.Store(true)
+	if h := d.hwnd.Load(); h != 0 {
+		win.PostMessage(win.HWND(h), tdmClickButton, idCancel, 0)
 	}
 }
 

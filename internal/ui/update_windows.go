@@ -174,7 +174,10 @@ func (u *updater) install(update *appupdate.Update) {
 		return
 	}
 
+	defer u.installing.Store(false)
+
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	progress := &taskDialog{
 		owner:       u.owner,
 		instruction: fmt.Sprintf("Installing version %s…", update.Version),
@@ -183,27 +186,27 @@ func (u *updater) install(update *appupdate.Update) {
 		onCancel:    cancel,
 	}
 
-	var finished bool
-	var installErr error
+	result := make(chan error, 1)
 	go func() {
 		err := appupdate.Install(ctx, update)
-		u.owner.Synchronize(func() {
-			finished, installErr = true, err
-			progress.close()
-		})
+		result <- err
+		// Dismiss the dialog straight from here. Its own modal loop is what
+		// pumps messages while progress.run() blocks, so walk.Synchronize
+		// would sit unrun until the dialog closed — a deadlock, since this is
+		// what closes it. close() posts to that loop instead.
+		progress.close()
 	}()
 
 	progress.run()
-	cancel()
-	u.installing.Store(false)
 
-	if !finished {
-		// The user cancelled and the download is aborting. If the race fell
-		// the other way the update is already on disk and simply waits for
-		// the next launch — never a torn state, thanks to the atomic swap.
+	// A cancelled context means the user hit Cancel before the download
+	// finished; the download is now aborting. If the swap had already landed,
+	// the new build is on disk for the next launch — the atomic swap never
+	// leaves a torn file. Only a run that completed reaches finishInstall.
+	if ctx.Err() != nil {
 		return
 	}
-	u.finishInstall(update, installErr)
+	u.finishInstall(update, <-result)
 }
 
 // finishInstall reports the outcome and offers the restart. Runs on the UI

@@ -1,10 +1,13 @@
 name: CI
 
+# Only main and the pull requests targeting it. Work branches push often and
+# a Windows runner bills at double rate, so they are checked when they are
+# proposed for merge, not on every commit.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
