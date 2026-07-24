@@ -131,38 +131,85 @@ func (u *updater) offerInstall(owner walk.Form, update *appupdate.Update) {
 	if u.installing.Load() {
 		return
 	}
-	answer := walk.MsgBox(owner, "Updates",
-		fmt.Sprintf("Version %s is available. Install now?", update.Version),
-		walk.MsgBoxIconQuestion|walk.MsgBoxYesNo)
-	if answer == walk.DlgCmdYes {
+	choice := taskDialogChoice(owner,
+		fmt.Sprintf("Version %s is available", update.Version),
+		fmt.Sprintf("You have %s. Tokitoki keeps running while the update downloads and installs.", version.Version),
+		"Install now", "Not now")
+	if choice == 0 {
 		u.install(update)
 	}
 }
 
-// install downloads and swaps the binary off the UI thread, then offers the
-// restart on it. From here on the update cannot be lost: even a declined
-// restart leaves the new build on disk for the next launch.
+// install downloads and swaps the binary while a cancellable progress dialog
+// holds the screen, then offers the restart. Runs on the UI thread; the
+// progress dialog's modal loop keeps messages pumping while the download
+// goroutine works. Once the swap lands the update cannot be lost: even a
+// declined restart leaves the new build on disk for the next launch.
 func (u *updater) install(update *appupdate.Update) {
 	if !u.installing.CompareAndSwap(false, true) {
 		return
 	}
+
+	// Without TaskDialogIndirect there is no marquee to show: install in
+	// the background and speak up only at the end.
+	if procTaskDialogIndirect.Find() != nil {
+		go func() {
+			err := appupdate.Install(context.Background(), update)
+			u.owner.Synchronize(func() {
+				u.installing.Store(false)
+				u.finishInstall(update, err)
+			})
+		}()
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	progress := &taskDialog{
+		owner:       u.owner,
+		instruction: fmt.Sprintf("Installing version %s…", update.Version),
+		content:     "Downloading and verifying the update.",
+		marquee:     true,
+		onCancel:    cancel,
+	}
+
+	var finished bool
+	var installErr error
 	go func() {
-		err := appupdate.Install(context.Background(), update)
+		err := appupdate.Install(ctx, update)
 		u.owner.Synchronize(func() {
-			u.installing.Store(false)
-			if err != nil {
-				showError(u.owner, "Updates", err)
-				return
-			}
-			u.clearOffer()
-			answer := walk.MsgBox(u.owner, "Updates",
-				fmt.Sprintf("Version %s is installed. Restart Tokitoki now to start using it?", update.Version),
-				walk.MsgBoxIconQuestion|walk.MsgBoxYesNo)
-			if answer == walk.DlgCmdYes {
-				u.requestRestart()
-			}
+			finished, installErr = true, err
+			progress.close()
 		})
 	}()
+
+	progress.run()
+	cancel()
+	u.installing.Store(false)
+
+	if !finished {
+		// The user cancelled and the download is aborting. If the race fell
+		// the other way the update is already on disk and simply waits for
+		// the next launch — never a torn state, thanks to the atomic swap.
+		return
+	}
+	u.finishInstall(update, installErr)
+}
+
+// finishInstall reports the outcome and offers the restart. Runs on the UI
+// thread.
+func (u *updater) finishInstall(update *appupdate.Update, err error) {
+	if err != nil {
+		showError(u.owner, "The update failed", err)
+		return
+	}
+	u.clearOffer()
+	choice := taskDialogChoice(u.owner,
+		fmt.Sprintf("Version %s is installed", update.Version),
+		"Restarting takes a few seconds. If you skip, the update takes effect the next time Tokitoki starts.",
+		"Restart now", "Later")
+	if choice == 0 {
+		u.requestRestart()
+	}
 }
 
 // requestRestart records the relaunch target and ends the message loop.
@@ -170,7 +217,7 @@ func (u *updater) install(update *appupdate.Update) {
 func (u *updater) requestRestart() {
 	executable, err := os.Executable()
 	if err != nil {
-		showError(u.owner, "Updates", err)
+		showError(u.owner, "The restart failed", err)
 		return
 	}
 	restartTarget = executable

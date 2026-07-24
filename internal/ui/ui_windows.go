@@ -25,6 +25,8 @@ import (
 // Run starts the Windows message loop.
 func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	enableProcessDPIAwareness()
+	// Before any window or menu exists, so everything is born themed.
+	enableDarkMenus()
 
 	mainWindow, err := walk.NewMainWindow()
 	if err != nil {
@@ -87,6 +89,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		return err
 	}
 	watchTaskbarTheme(mainWindow.Handle(), func() {
+		flushMenuThemes()
 		light := taskbarUsesLightTheme()
 		if light == lightTaskbar {
 			return
@@ -142,7 +145,7 @@ func buildMenu(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *cor
 	trackingAction.Triggered().Attach(func() {
 		enabled := !trayApp.TrackingEnabled()
 		if err := trayApp.SetTrackingEnabled(enabled); err != nil {
-			showError(owner, "Tracking", err)
+			showError(owner, "Couldn't change tracking", err)
 		}
 		_ = trackingAction.SetChecked(trayApp.TrackingEnabled())
 	})
@@ -177,7 +180,7 @@ func addAction(menu *walk.Menu, text string, handler func()) error {
 func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	apiKey, err := trayApp.APIKey()
 	if err != nil && !errors.Is(err, agentlib.ErrMissingAPIKey) {
-		showError(owner, "Settings", err)
+		showError(owner, "Couldn't load settings", err)
 	}
 
 	var dialog *walk.Dialog
@@ -186,11 +189,14 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	var verifyButton *walk.PushButton
 	var verifyStatus *walk.Label
 
+	family, pointSize := messageFont()
+	headerFont := Font{Family: family, PointSize: pointSize, Bold: true}
+
 	var checkUpdatesButton *walk.PushButton
 	children := []Widget{
 		Label{
 			Text: "API Key",
-			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+			Font: headerFont,
 		},
 		LineEdit{
 			AssignTo:  &apiKeyEdit,
@@ -223,7 +229,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	children = append(children,
 		Label{
 			Text: "General",
-			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+			Font: headerFont,
 		},
 		CheckBox{
 			AssignTo: &launchAtLogin,
@@ -232,7 +238,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		},
 		Label{
 			Text: "Updates",
-			Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
+			Font: headerFont,
 		},
 		Composite{
 			Layout: HBox{MarginsZero: true, Spacing: 8},
@@ -264,12 +270,12 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 						apiKey := strings.TrimSpace(apiKeyEdit.Text())
 						if apiKey != "" {
 							if err := trayApp.SetAPIKey(apiKey); err != nil {
-								showError(dialog, "Settings", err)
+								showError(dialog, "Couldn't save settings", err)
 								return
 							}
 						}
 						if err := launch.SetEnabled(launchAtLogin.Checked()); err != nil {
-							showError(dialog, "Settings", err)
+							showError(dialog, "Couldn't save settings", err)
 							return
 						}
 						dialog.Accept()
@@ -279,21 +285,26 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		},
 	)
 
-	_, err = Dialog{
+	// Create before Run: the DWM theme attributes must land on the window
+	// before it is shown, or the title bar flashes light first.
+	err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
 		MinSize:   Size{Width: 460, Height: 320},
 		FixedSize: true,
-		Font:      Font{Family: "Segoe UI", PointSize: 9},
+		Font:      Font{Family: family, PointSize: pointSize},
 		Layout: VBox{
 			Margins: Margins{Left: 20, Top: 18, Right: 20, Bottom: 18},
 			Spacing: 12,
 		},
 		Children: children,
-	}.Run(owner)
+	}.Create(owner)
 	if err != nil {
-		showError(owner, "Settings", err)
+		showError(owner, "Couldn't open settings", err)
+		return
 	}
+	applyDialogTheme(dialog.Handle())
+	dialog.Run()
 }
 
 // runKeyVerification checks the entered key with the server off the UI
@@ -340,15 +351,13 @@ func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton, up *updater) {
 			button.SetEnabled(true)
 			switch {
 			case errors.Is(err, appupdate.ErrDevBuild):
-				walk.MsgBox(owner, "Updates",
-					"This is a development build; update checks are disabled.",
-					walk.MsgBoxIconInformation|walk.MsgBoxOK)
+				taskDialogInfo(owner, "Update checks are disabled",
+					"This is a development build with no release version to compare.")
 			case err != nil:
-				showError(owner, "Updates", err)
+				showError(owner, "The update check failed", err)
 			case update == nil:
-				walk.MsgBox(owner, "Updates",
-					fmt.Sprintf("You're up to date (%s).", version.Summary()),
-					walk.MsgBoxIconInformation|walk.MsgBoxOK)
+				taskDialogInfo(owner, "You're up to date",
+					fmt.Sprintf("%s is the newest published build.", version.Summary()))
 			default:
 				up.offerInstall(owner, update)
 			}
@@ -365,7 +374,7 @@ func openDashboard(owner *walk.MainWindow, trayApp *coreapp.App) {
 		owner.Synchronize(func() {
 			verb := syscall.StringToUTF16Ptr("open")
 			if !win.ShellExecute(owner.Handle(), verb, syscall.StringToUTF16Ptr(target), nil, nil, win.SW_SHOWNORMAL) {
-				showError(owner, "Dashboard", fmt.Errorf("open %s failed", target))
+				showError(owner, "Couldn't open the dashboard", fmt.Errorf("open %s failed", target))
 			}
 		})
 	}()
@@ -375,7 +384,7 @@ func showError(owner walk.Form, title string, err error) {
 	if err == nil {
 		return
 	}
-	walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError|walk.MsgBoxOK)
+	taskDialogError(owner, title, err.Error())
 }
 
 func truncateStatus(message string) string {
