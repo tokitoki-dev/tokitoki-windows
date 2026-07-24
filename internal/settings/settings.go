@@ -22,6 +22,10 @@ type Settings struct {
 	// the zero value — and every settings file written before the field
 	// existed — means "tracking on", the default.
 	TrackingDisabled bool `json:"tracking_disabled,omitempty"`
+
+	// AutomaticUpdatesDisabled stops the background update check. Stored
+	// inverted for the same reason: absent means updates stay automatic.
+	AutomaticUpdatesDisabled bool `json:"automatic_updates_disabled,omitempty"`
 }
 
 // Store reads and writes settings under the shared Tokitoki data directory.

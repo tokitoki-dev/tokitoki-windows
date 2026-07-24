@@ -17,7 +17,6 @@ import (
 	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/apikey"
 	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
-	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/version"
 )
@@ -55,7 +54,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 		return err
 	}
 
-	up := newUpdater(mainWindow, notifyIcon, logger)
+	up := newUpdater(mainWindow, notifyIcon, logger, trayApp.AutomaticUpdatesEnabled)
 	if err := buildMenu(mainWindow, notifyIcon, trayApp, up, logger); err != nil {
 		return err
 	}
@@ -185,14 +184,28 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 
 	var dialog *walk.Dialog
 	var apiKeyEdit *walk.LineEdit
-	var launchAtLogin *walk.CheckBox
 	var verifyButton *walk.PushButton
 	var verifyStatus *walk.Label
 
 	family, pointSize := messageFont()
 	headerFont := Font{Family: family, PointSize: pointSize, Bold: true}
 
-	var checkUpdatesButton *walk.PushButton
+	// Both switches are staged locally and written by Save, so Cancel still
+	// means "change nothing" — the same contract the API key field has.
+	dpi := owner.AsFormBase().DPI()
+	launchToggle, err := newToggle(dpi, launch.IsEnabled(), nil)
+	if err != nil {
+		showError(owner, "Couldn't open settings", err)
+		return
+	}
+	defer launchToggle.dispose()
+	updatesToggle, err := newToggle(dpi, trayApp.AutomaticUpdatesEnabled(), nil)
+	if err != nil {
+		showError(owner, "Couldn't open settings", err)
+		return
+	}
+	defer updatesToggle.dispose()
+
 	children := []Widget{
 		Label{
 			Text: "API Key",
@@ -226,37 +239,19 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 			},
 		},
 	}
+	muted := mutedTextColor()
 	children = append(children,
-		Label{
-			Text: "General",
-			Font: headerFont,
-		},
-		CheckBox{
-			AssignTo: &launchAtLogin,
-			Text:     "Launch at login",
-			Checked:  launch.IsEnabled(),
-		},
-		Label{
-			Text: "Updates",
-			Font: headerFont,
-		},
+		HSeparator{},
+		settingRow(headerFont, muted, launchToggle,
+			"Launch at login", "Start automatically when you sign in"),
+		settingRow(headerFont, muted, updatesToggle,
+			"Automatic updates", "Check for new versions in the background"),
+		VSpacer{},
+		HSeparator{},
 		Composite{
 			Layout: HBox{MarginsZero: true, Spacing: 8},
 			Children: []Widget{
-				Label{Text: version.Summary()},
-				HSpacer{},
-				PushButton{
-					AssignTo: &checkUpdatesButton,
-					Text:     "Check for updates",
-					OnClicked: func() {
-						runUpdateCheck(dialog, checkUpdatesButton, up)
-					},
-				},
-			},
-		},
-		Composite{
-			Layout: HBox{MarginsZero: true, Spacing: 8},
-			Children: []Widget{
+				Label{Text: version.Summary(), TextColor: muted},
 				HSpacer{},
 				PushButton{
 					Text: "Cancel",
@@ -274,7 +269,11 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 								return
 							}
 						}
-						if err := launch.SetEnabled(launchAtLogin.Checked()); err != nil {
+						if err := launch.SetEnabled(launchToggle.checked()); err != nil {
+							showError(dialog, "Couldn't save settings", err)
+							return
+						}
+						if err := trayApp.SetAutomaticUpdatesEnabled(updatesToggle.checked()); err != nil {
 							showError(dialog, "Couldn't save settings", err)
 							return
 						}
@@ -287,10 +286,20 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 
 	// Create before Run: the DWM theme attributes must land on the window
 	// before it is shown, or the title bar flashes light first.
+	// Without an icon of its own a dialog shows the generic Windows one: the
+	// main window's icon is not inherited, and it is hidden anyway.
+	// A missing icon is cosmetic only, so fall back to the default rather
+	// than refusing to open Settings.
+	dialogIcon, iconErr := newAppIcon()
+	if iconErr == nil {
+		defer dialogIcon.Dispose()
+	}
+
 	err = Dialog{
 		AssignTo:  &dialog,
 		Title:     "Settings",
-		MinSize:   Size{Width: 460, Height: 320},
+		Icon:      dialogIcon,
+		MinSize:   Size{Width: 460, Height: 340},
 		FixedSize: true,
 		Font:      Font{Family: family, PointSize: pointSize},
 		Layout: VBox{
@@ -331,35 +340,6 @@ func runKeyVerification(dialog *walk.Dialog, button *walk.PushButton, status *wa
 				_ = status.SetText("✓ Key is valid.")
 			default:
 				_ = status.SetText("✗ Key is invalid or has been revoked.")
-			}
-		})
-	}()
-}
-
-// runUpdateCheck asks the server for a newer build off the UI thread, then
-// reports back on it. The user asked, so every outcome gets an answer —
-// unlike the background check, which only speaks up for news. A "yes" on the
-// offer hands over to the shared install pipeline.
-func runUpdateCheck(owner *walk.Dialog, button *walk.PushButton, up *updater) {
-	button.SetEnabled(false)
-	go func() {
-		update, err := appupdate.Check(context.Background(), agentlib.BaseURL(), version.Version)
-		owner.Synchronize(func() {
-			if owner.IsDisposed() {
-				return
-			}
-			button.SetEnabled(true)
-			switch {
-			case errors.Is(err, appupdate.ErrDevBuild):
-				taskDialogInfo(owner, "Update checks are disabled",
-					"This is a development build with no release version to compare.")
-			case err != nil:
-				showError(owner, "The update check failed", err)
-			case update == nil:
-				taskDialogInfo(owner, "You're up to date",
-					fmt.Sprintf("%s is the newest published build.", version.Summary()))
-			default:
-				up.offerInstall(owner, update)
 			}
 		})
 	}()

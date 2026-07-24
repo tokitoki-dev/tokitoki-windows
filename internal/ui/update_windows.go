@@ -42,13 +42,18 @@ type updater struct {
 	logger     *slog.Logger
 	installing atomic.Bool
 
+	// autoEnabled reports whether the user still wants background checks. It
+	// is consulted before every scheduled check rather than captured once, so
+	// flipping the Settings switch takes effect without a restart.
+	autoEnabled func() bool
+
 	// UI-thread state.
 	latest       *appupdate.Update
 	updateAction *walk.Action
 }
 
-func newUpdater(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, logger *slog.Logger) *updater {
-	u := &updater{owner: owner, notifyIcon: notifyIcon, logger: logger}
+func newUpdater(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, logger *slog.Logger, autoEnabled func() bool) *updater {
+	u := &updater{owner: owner, notifyIcon: notifyIcon, logger: logger, autoEnabled: autoEnabled}
 	notifyIcon.MessageClicked().Attach(func() {
 		if u.latest != nil {
 			u.offerInstall(u.owner, u.latest)
@@ -72,6 +77,12 @@ func (u *updater) run(ctx context.Context) {
 		case <-timer.C:
 		}
 		timer.Reset(checkInterval)
+
+		// Keep the schedule running while switched off, so turning it back
+		// on resumes without a restart.
+		if u.autoEnabled != nil && !u.autoEnabled() {
+			continue
+		}
 
 		update, err := appupdate.Check(ctx, agentlib.BaseURL(), version.Version)
 		switch {

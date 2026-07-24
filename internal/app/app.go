@@ -28,10 +28,14 @@ type App struct {
 	settings   *settings.Store
 	syncer     *syncer.Syncer
 	watcher    *watcher.Watcher
-	logger     *slog.Logger
-	trackingMu sync.RWMutex
-	tracking   bool
-	ctx        context.Context
+	logger *slog.Logger
+
+	// prefsMu guards the cached user preferences below.
+	prefsMu     sync.RWMutex
+	tracking    bool
+	autoUpdates bool
+
+	ctx context.Context
 }
 
 // New creates an App.
@@ -64,6 +68,9 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.setTracking(!config.TrackingDisabled)
+	a.prefsMu.Lock()
+	a.autoUpdates = !config.AutomaticUpdatesDisabled
+	a.prefsMu.Unlock()
 
 	a.syncer.Start(ctx)
 	a.syncer.Periodically(ctx, syncInterval)
@@ -83,16 +90,51 @@ func (a *App) Stop() {
 
 // TrackingEnabled reports whether monitoring and syncing are active.
 func (a *App) TrackingEnabled() bool {
-	a.trackingMu.RLock()
-	defer a.trackingMu.RUnlock()
+	a.prefsMu.RLock()
+	defer a.prefsMu.RUnlock()
 	return a.tracking
+}
+
+// savePref applies mutate to the persisted settings. Save rewrites the whole
+// file, so every preference must be read back first or saving one would erase
+// the others.
+func (a *App) savePref(mutate func(*settings.Settings)) error {
+	current, err := a.settings.Load()
+	if err != nil {
+		return err
+	}
+	mutate(&current)
+	return a.settings.Save(current)
+}
+
+// AutomaticUpdatesEnabled reports whether the background update check runs.
+func (a *App) AutomaticUpdatesEnabled() bool {
+	a.prefsMu.RLock()
+	defer a.prefsMu.RUnlock()
+	return a.autoUpdates
+}
+
+// SetAutomaticUpdatesEnabled persists the automatic-update switch. The
+// background checker consults it before every run, so no restart is needed.
+func (a *App) SetAutomaticUpdatesEnabled(enabled bool) error {
+	if err := a.savePref(func(s *settings.Settings) {
+		s.AutomaticUpdatesDisabled = !enabled
+	}); err != nil {
+		return err
+	}
+	a.prefsMu.Lock()
+	a.autoUpdates = enabled
+	a.prefsMu.Unlock()
+	return nil
 }
 
 // SetTrackingEnabled persists the tracking switch and applies it: off stops
 // filesystem monitoring and makes sync runs no-ops, on resumes both and
 // syncs immediately to catch up on whatever happened while paused.
 func (a *App) SetTrackingEnabled(enabled bool) error {
-	if err := a.settings.Save(settings.Settings{TrackingDisabled: !enabled}); err != nil {
+	if err := a.savePref(func(s *settings.Settings) {
+		s.TrackingDisabled = !enabled
+	}); err != nil {
 		return err
 	}
 	a.setTracking(enabled)
@@ -171,7 +213,7 @@ func (a *App) syncOptions() agentlib.SyncOptions {
 }
 
 func (a *App) setTracking(enabled bool) {
-	a.trackingMu.Lock()
-	defer a.trackingMu.Unlock()
+	a.prefsMu.Lock()
+	defer a.prefsMu.Unlock()
 	a.tracking = enabled
 }
