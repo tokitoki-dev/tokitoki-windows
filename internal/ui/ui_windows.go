@@ -35,6 +35,14 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 	mainWindow.SetVisible(false)
 	applyWindowTheme(mainWindow.Handle())
 
+	// A tray app outlives its windows. walk's default close disposes the
+	// form, which ends the message loop and with it the process, so closing
+	// this one is refused outright: only Quit — or a shutdown signal — exits.
+	mainWindow.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		*canceled = true
+		mainWindow.SetVisible(false)
+	})
+
 	icon, err := newAppIcon()
 	if err != nil {
 		return err
@@ -327,6 +335,9 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	}
 	applyDialogTheme(dialog.Handle())
 	dialog.Run()
+	// walk re-shows a dialog's owner as the dialog closes. Here the owner is
+	// the tray's hidden window, which must not surface.
+	owner.SetVisible(false)
 }
 
 // runKeyVerification checks the entered key with the server off the UI
