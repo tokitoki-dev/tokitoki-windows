@@ -20,6 +20,13 @@ const (
 	handStroke = 36.0
 )
 
+// markFill enlarges the bare tray mark about its center so the ring nearly
+// fills the icon and matches the visual weight of neighboring taskbar icons.
+// The source mark's outer ring spans only ~70% of the frame — fine behind the
+// app-icon plate, but too small as a lone tray glyph. The plated AppIcon keeps
+// the source's designed padding (fill 1.0); only the tray mark is scaled up.
+const markFill = 1.3
+
 var (
 	ringCenter = point{512, 512}
 	handTip    = point{344, 386}
@@ -56,9 +63,17 @@ func AppIcon(size int) *image.NRGBA {
 }
 
 func render(size int, withPlate bool, markColor color.NRGBA) *image.NRGBA {
+	// The bare tray mark is enlarged to fill the icon; the plated app icon
+	// keeps the source's designed padding.
+	fill := markFill
+	if withPlate {
+		fill = 1.0
+	}
 	scale := float64(size) / design
-	halfRing := math.Max(ringStroke/2*scale, 0.8)
-	halfHand := math.Max(handStroke/2*scale, 0.75)
+	markScale := scale * fill
+	center := float64(size) / 2
+	halfRing := math.Max(ringStroke/2*markScale, 0.8)
+	halfHand := math.Max(handStroke/2*markScale, 0.75)
 	corner := plateCornerRadius * float64(size)
 
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
@@ -70,7 +85,7 @@ func render(size int, withPlate bool, markColor color.NRGBA) *image.NRGBA {
 				for sx := 0; sx < ss; sx++ {
 					px := float64(x) + (float64(sx)+0.5)/ss
 					py := float64(y) + (float64(sy)+0.5)/ss
-					markCov += coverage(markDistance(px, py, scale, halfRing, halfHand))
+					markCov += coverage(markDistance(px, py, center, center, markScale, halfRing, halfHand))
 					if withPlate {
 						plateCov += coverage(roundRectDistance(px, py, float64(size), corner))
 					}
@@ -85,16 +100,17 @@ func render(size int, withPlate bool, markColor color.NRGBA) *image.NRGBA {
 }
 
 // markDistance is the signed distance from (px,py) to the mark's edge:
-// negative inside the ring or the hand.
-func markDistance(px, py, scale, halfRing, halfHand float64) float64 {
-	dx := px - ringCenter.x*scale
-	dy := py - ringCenter.y*scale
-	ring := math.Abs(math.Hypot(dx, dy)-ringRadius*scale) - halfRing
+// negative inside the ring or the hand. The mark is centered on (cx,cy) and
+// scaled about it by markScale, so it can be enlarged without moving.
+func markDistance(px, py, cx, cy, markScale, halfRing, halfHand float64) float64 {
+	dx := px - cx
+	dy := py - cy
+	ring := math.Abs(math.Hypot(dx, dy)-ringRadius*markScale) - halfRing
 
 	hand := segmentDistance(
 		point{px, py},
-		point{handTip.x * scale, handTip.y * scale},
-		point{handBase.x * scale, handBase.y * scale},
+		point{cx + (handTip.x-ringCenter.x)*markScale, cy + (handTip.y-ringCenter.y)*markScale},
+		point{cx + (handBase.x-ringCenter.x)*markScale, cy + (handBase.y-ringCenter.y)*markScale},
 	) - halfHand
 
 	return math.Min(ring, hand)
