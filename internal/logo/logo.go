@@ -10,27 +10,27 @@ import (
 	"math"
 )
 
-// Geometry of the mark on its 1024-unit design grid, taken from the product
-// SVG: a circle of radius 340 stroked 40 wide, and a hand running from ten
-// o'clock to the center.
+// Geometry of the mark on its 346-unit design grid, taken from the product
+// SVG with the outer margin removed: a circle of radius 160.5 stroked 25 wide
+// whose outer edge (r 173) exactly meets the frame, and a hand running from
+// ten o'clock to the center. Because the ring fills the frame, the bare tray
+// glyph reads at the same visual weight as neighboring taskbar icons.
 const (
-	design     = 1024.0
-	ringRadius = 340.0
-	ringStroke = 40.0
-	handStroke = 36.0
+	design     = 346.0
+	ringRadius = 160.5
+	ringStroke = 25.0
+	handStroke = 25.0
 )
 
-// markFill enlarges the bare tray mark about its center so the ring nearly
-// fills the icon and matches the visual weight of neighboring taskbar icons.
-// The source mark's outer ring spans only ~70% of the frame — fine behind the
-// app-icon plate, but too small as a lone tray glyph. The plated AppIcon keeps
-// the source's designed padding (fill 1.0); only the tray mark is scaled up.
-const markFill = 1.3
+// appIconMarkFraction insets the mark within the app-icon plate so it sits
+// padded inside the rounded rectangle instead of touching its edges. The bare
+// tray glyph fills the frame (fraction 1.0); only the plated icon shrinks it.
+const appIconMarkFraction = 0.72
 
 var (
-	ringCenter = point{512, 512}
-	handTip    = point{344, 386}
-	handBase   = point{504, 510}
+	ringCenter = point{173, 173}
+	handTip    = point{94.49, 113.64}
+	handBase   = point{171.83, 183.79}
 )
 
 // Dark is the product mark color for light backgrounds.
@@ -63,11 +63,11 @@ func AppIcon(size int) *image.NRGBA {
 }
 
 func render(size int, withPlate bool, markColor color.NRGBA) *image.NRGBA {
-	// The bare tray mark is enlarged to fill the icon; the plated app icon
-	// keeps the source's designed padding.
-	fill := markFill
+	// The bare tray mark fills the icon; the plated app icon insets it so the
+	// mark sits padded inside the rounded rectangle.
+	fill := 1.0
 	if withPlate {
-		fill = 1.0
+		fill = appIconMarkFraction
 	}
 	scale := float64(size) / design
 	markScale := scale * fill
