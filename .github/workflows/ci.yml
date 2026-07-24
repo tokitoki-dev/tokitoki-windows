@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -16,25 +16,21 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: tokitoki-windows
     steps:
-      # go.mod resolves the agentlib module from a sibling checkout
-      # (replace => ../tokitoki-cli), so both repos land side by side.
+      # agentlib now resolves from the module proxy like any other dependency,
+      # so this repo builds on its own — no sibling checkout required.
       - uses: actions/checkout@v4
-        with:
-          path: tokitoki-windows
-      - uses: actions/checkout@v4
-        with:
-          repository: tokitoki-dev/tokitoki-cli
-          path: tokitoki-cli
       - uses: actions/setup-go@v5
         with:
-          go-version-file: tokitoki-windows/go.mod
+          go-version-file: go.mod
 
       - name: Test
         run: pwsh -NoProfile -File scripts/build.ps1 -Task test
 
-      - name: Build (amd64 smoke build)
-        run: pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch amd64
+      # Both release architectures are compiled here, not just the host one:
+      # arm64 ships to users, so a break in it must fail CI, not the release.
+      - name: Build both release architectures
+        run: |
+          foreach ($arch in @("amd64", "arm64")) {
+            pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch
+          }

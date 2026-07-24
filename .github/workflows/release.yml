@@ -5,58 +5,81 @@ name: Release
 # platform and arch tokens the server's asset matcher expects. Publishing to
 # users still happens in /admin/releases — a GitHub release alone ships
 # nothing.
+#
+# No secrets are required: the build needs nothing but the module proxy.
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: tokitoki-windows
+    permissions:
+      contents: write
     steps:
-      # go.mod resolves the agentlib module from a sibling checkout
-      # (replace => ../tokitoki-cli), pinned to the CLI's latest release tag
-      # so a release links released library code, not whatever main holds.
+      # agentlib resolves from the module proxy at the version go.mod pins, so
+      # a release links a published library, not whatever a sibling checkout
+      # happened to hold.
       - uses: actions/checkout@v4
         with:
-          path: tokitoki-windows
-      - uses: actions/checkout@v4
-        with:
-          repository: tokitoki-dev/tokitoki-cli
-          path: tokitoki-cli
           fetch-depth: 0
-      - name: Pin the CLI checkout to its latest release tag
-        working-directory: tokitoki-cli
+
+      - name: Verify the release tag belongs to main
         run: |
-          $tag = git tag --list "v[0-9]*" --sort=-v:refname | Select-Object -First 1
-          if (-not $tag) { throw "tokitoki-cli has no release tag" }
-          git checkout --quiet $tag
+          git fetch origin main --no-tags
+          $commit = git rev-list -n 1 $env:GITHUB_REF_NAME
+          git merge-base --is-ancestor $commit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tags must point to a commit on main"
+          }
+
       - uses: actions/setup-go@v5
         with:
-          go-version-file: tokitoki-windows/go.mod
+          go-version-file: go.mod
 
       - name: Test
         run: pwsh -NoProfile -File scripts/build.ps1 -Task test
 
       - name: Build both architectures
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version = $env:GITHUB_REF_NAME -replace '^v'
           $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           foreach ($arch in @("amd64", "arm64")) {
             pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch `
               -Version $version -Commit $env:GITHUB_SHA -BuildDate $date
           }
 
+      # A cross-compile that silently produced two amd64 binaries would ship an
+      # arm64 asset that cannot run. The build stamp names the real target.
+      - name: Verify each binary is the architecture it claims
+        run: |
+          foreach ($arch in @("amd64", "arm64")) {
+            $exe = "dist/tokitoki-windows-$arch.exe"
+            $info = (go version -m $exe) -join "`n"
+            if ($info -notmatch "GOARCH=$arch") {
+              throw "$exe is not $arch"
+            }
+            "$exe : $arch confirmed"
+          }
+
+      # Only the two arch-tagged assets are published. `build.ps1` also leaves
+      # an unsuffixed `tokitoki-windows.exe` copy for local use, and uploading
+      # it would offer the server's asset matcher a file with no arch token.
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*.exe).FullName `
+          gh release create $env:GITHUB_REF_NAME `
+            dist/tokitoki-windows-amd64.exe `
+            dist/tokitoki-windows-arm64.exe `
+            --repo $env:GITHUB_REPOSITORY `
             --title $env:GITHUB_REF_NAME `
             --generate-notes

@@ -12,7 +12,7 @@ tokitoki-windows.exe
   ├─ launch-at-login registry integration
   ├─ recursive Claude Code / Codex directory watcher
   ├─ periodic sync scheduler
-  └─ agentlib sync engine from ../tokitoki-cli
+  └─ agentlib sync engine from the tokitoki-cli module
 ```
 
 The Windows client does not bundle or spawn a separate agent process. It builds
@@ -27,24 +27,28 @@ $env:TOKITOKI_BASE_URL = "http://localhost:9093"
 .\tokitoki-windows.exe
 ```
 
-## Source layout
+## The agent library
 
-This project imports the agent library through this local replacement:
+`agentlib` comes from the published `github.com/tokitoki-dev/tokitoki-cli`
+module at the version `go.mod` pins, like any other dependency. This repo
+therefore builds on its own — no sibling checkout, no `replace` directive.
 
-```text
-replace github.com/tokitoki-dev/tokitoki-cli => ../tokitoki-cli
+To pick up CLI changes, release them from `tokitoki-cli` first, then bump the
+version here:
+
+```sh
+go get github.com/tokitoki-dev/tokitoki-cli@v0.2.0
+go mod tidy
 ```
 
-For local builds, keep both projects next to each other:
+To try an unreleased CLI locally, add a temporary replacement — but never
+commit it, or a release would link unpublished code:
 
-```text
-tokitoki/
-  tokitoki-cli/
-  tokitoki-windows/
+```sh
+go mod edit -replace=github.com/tokitoki-dev/tokitoki-cli=../tokitoki-cli
+# undo with:
+go mod edit -dropreplace=github.com/tokitoki-dev/tokitoki-cli
 ```
-
-If `tokitoki-windows` is copied alone, `make` cannot resolve `agentlib` and Go
-will report that the replacement path cannot be found.
 
 ## Build
 
@@ -101,6 +105,35 @@ If the manifest resource needs to be regenerated:
 ```sh
 make generate
 ```
+
+## Release
+
+Releases are cut by tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`,
+which tests, builds both architectures, checks each binary really is the
+architecture it claims, and publishes a GitHub release carrying:
+
+```text
+tokitoki-windows-amd64.exe
+tokitoki-windows-arm64.exe
+```
+
+Those names are what the server's asset matcher reads, so it can hand each
+machine the right build. The unsuffixed `dist/tokitoki-windows.exe` produced by
+local builds is deliberately not published.
+
+The tag must point at a commit on `main` — the workflow refuses otherwise — so
+merge first, then:
+
+```sh
+git switch main
+git merge --ff-only dev
+git push origin main
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+A published GitHub release does not ship anything to users on its own; rolling
+it out still happens in `/admin/releases`.
 
 ## License
 

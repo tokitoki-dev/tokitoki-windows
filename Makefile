@@ -9,7 +9,7 @@ BUILD_ARGS := -Arch $(GOARCH) -Version $(VERSION) -Commit $(COMMIT) -BuildDate $
 
 .DEFAULT_GOAL := build
 
-.PHONY: build build-amd64 build-arm64 build-all debug test generate clean size check-agent
+.PHONY: build build-amd64 build-arm64 build-all debug test generate clean size
 
 build:
 	$(PS) -NoProfile -ExecutionPolicy Bypass -File $(BUILD_SCRIPT) -Task build $(BUILD_ARGS)
@@ -36,6 +36,3 @@ clean:
 
 size:
 	$(PS) -NoProfile -ExecutionPolicy Bypass -File $(BUILD_SCRIPT) -Task size $(BUILD_ARGS)
-
-check-agent:
-	$(PS) -NoProfile -ExecutionPolicy Bypass -File $(BUILD_SCRIPT) -Task check-agent

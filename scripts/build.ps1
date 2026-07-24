@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("build", "debug", "test", "generate", "clean", "size", "check-agent")]
+    [ValidateSet("build", "debug", "test", "generate", "clean", "size")]
     [string]$Task = "build",
 
     [ValidateSet("amd64", "arm64")]
@@ -23,7 +23,6 @@ $Manifest = Join-Path $Root "cmd/tokitoki-windows/tokitoki-windows.exe.manifest"
 $ResourcesGo = Join-Path $Root "cmd/tokitoki-windows/resources.go"
 $IconSvg = Join-Path $Root "assets/app-icon.svg"
 $IconIco = Join-Path $Root "assets/app-icon.ico"
-$AgentMod = Join-Path $Root "../tokitoki-cli/go.mod"
 $VersionPkg = "github.com/tokitoki-dev/tokitoki-windows/internal/version"
 
 function Stop-Build {
@@ -45,12 +44,6 @@ function Invoke-Checked {
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
         Stop-Build "$FilePath failed with exit code $LASTEXITCODE" $LASTEXITCODE
-    }
-}
-
-function Assert-Agent {
-    if (-not (Test-Path -LiteralPath $AgentMod -PathType Leaf)) {
-        Stop-Build "Missing ../tokitoki-cli. Put tokitoki-cli next to tokitoki-windows or publish the module and remove the replace directive."
     }
 }
 
@@ -148,7 +141,6 @@ function Get-LdFlags {
 function Build-App {
     param([switch]$Debug)
 
-    Assert-Agent
     Ensure-Resource -TargetArch $Arch
     Ensure-Dist
 
@@ -170,8 +162,34 @@ function Build-App {
     )
 
     if (-not $Debug -and $Arch -eq "amd64") {
-        Copy-Item -Force -LiteralPath $out -Destination (Join-Path $DistDir "$App.exe")
+        Install-CompatCopy -Source $out
     }
+}
+
+# The unsuffixed copy is the path the README tells people to run, so it has to
+# end up holding this build. Windows refuses to overwrite it while that copy is
+# running, but it does allow a rename — the same move the app's own updater
+# makes — so the running file steps aside and the fresh build takes its name.
+# Failing instead would leave a stale binary at the documented path.
+function Install-CompatCopy {
+    param([string]$Source)
+
+    $target = Join-Path $DistDir "$App.exe"
+    $stale = "$target.old"
+    Remove-Item -Force -LiteralPath $stale -ErrorAction SilentlyContinue
+
+    try {
+        Copy-Item -Force -LiteralPath $Source -Destination $target -ErrorAction Stop
+        return
+    } catch {
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            throw
+        }
+    }
+
+    Rename-Item -LiteralPath $target -NewName "$App.exe.old" -ErrorAction Stop
+    Copy-Item -Force -LiteralPath $Source -Destination $target
+    Write-Host "note: $App.exe was in use; the running copy is now $App.exe.old"
 }
 
 function Generate-Resources {
@@ -199,7 +217,6 @@ try {
             Build-App -Debug
         }
         "test" {
-            Assert-Agent
             Invoke-Checked $Go @("test", "./...")
         }
         "generate" {
@@ -213,9 +230,6 @@ try {
             Ensure-Icon
             Build-App
             Get-Item -LiteralPath (Join-Path $DistDir "$App-$Arch.exe") | Select-Object FullName, Length
-        }
-        "check-agent" {
-            Assert-Agent
         }
     }
 } finally {
