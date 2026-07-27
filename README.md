@@ -30,24 +30,37 @@ $env:TOKITOKI_BASE_URL = "http://localhost:9093"
 ## The agent library
 
 `agentlib` comes from the published `github.com/tokitoki-dev/tokitoki-cli`
-module at the version `go.mod` pins, like any other dependency. This repo
-therefore builds on its own — no sibling checkout, no `replace` directive.
+module at the version `go.mod` pins. CI and the release workflow build exactly
+that: they check out this repo alone and resolve the pin from the module proxy,
+so a release always links published, tagged library code.
 
-To pick up CLI changes, release them from `tokitoki-cli` first, then bump the
-version here:
+Local development instead builds from the sibling `../tokitoki-cli` source
+checkout, through a gitignored `go.work` in this directory:
 
-```sh
-go get github.com/tokitoki-dev/tokitoki-cli@v0.2.0
-go mod tidy
+```text
+go 1.25.0
+
+use (
+	.
+	../tokitoki-cli
+)
 ```
 
-To try an unreleased CLI locally, add a temporary replacement — but never
-commit it, or a release would link unpublished code:
+With that file present, every `go build` / `go test` here links the sibling
+source, so app and CLI changes can be developed together without cutting a CLI
+release. Because `go.work` never gets committed, it cannot leak into CI. To
+reproduce the exact release build locally, disable the workspace:
 
 ```sh
-go mod edit -replace=github.com/tokitoki-dev/tokitoki-cli=../tokitoki-cli
-# undo with:
-go mod edit -dropreplace=github.com/tokitoki-dev/tokitoki-cli
+GOWORK=off go build ./...
+```
+
+To move a release to a newer CLI, tag it in `tokitoki-cli` first, then bump the
+pin here:
+
+```sh
+GOWORK=off go get github.com/tokitoki-dev/tokitoki-cli@v0.1.4
+GOWORK=off go mod tidy
 ```
 
 ## Build

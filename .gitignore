@@ -2,3 +2,8 @@ dist/
 *.exe
 *.dll
 *.pdb
+
+# Local-only workspace: links agentlib from ../tokitoki-cli source. CI and
+# releases must build against the go.mod pin, so this never gets committed.
+go.work
+go.work.sum
