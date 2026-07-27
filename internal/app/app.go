@@ -3,7 +3,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -196,17 +195,13 @@ func (a *App) RestartMonitoring() error {
 	return a.watcher.Start(a.ctx, paths)
 }
 
-// syncOptions resolves what a sync run should scan. Tracking off — or no API
-// key yet, as on macOS — means nothing: the syncer already treats an empty
-// provider set as a no-op, so neither pause needs a second mechanism.
+// syncOptions resolves what a sync run should scan. Tracking off means
+// nothing: the syncer already treats an empty provider set as a no-op. A
+// missing API key is deliberately not checked here — scanning is offline
+// work, events queue locally, and agentlib skips the upload half on its own
+// until a key is saved.
 func (a *App) syncOptions() agentlib.SyncOptions {
 	if !a.TrackingEnabled() {
-		return agentlib.SyncOptions{}
-	}
-	if _, err := a.client.GetAPIKey(); err != nil {
-		if !errors.Is(err, agentlib.ErrMissingAPIKey) {
-			a.logger.Warn("check api key", "error", err)
-		}
 		return agentlib.SyncOptions{}
 	}
 	return datadirs.Resolve().SyncOptions()
