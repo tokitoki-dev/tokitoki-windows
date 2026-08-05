@@ -14,7 +14,7 @@ import (
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/agentcli"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/apikey"
 	coreapp "github.com/tokitoki-dev/tokitoki-windows/internal/app"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/launch"
@@ -134,7 +134,7 @@ func Run(ctx context.Context, trayApp *coreapp.App, logger *slog.Logger) error {
 }
 
 func showStartupUI(owner *walk.MainWindow, notifyIcon *walk.NotifyIcon, trayApp *coreapp.App, up *updater, logger *slog.Logger) {
-	if _, err := trayApp.APIKey(); errors.Is(err, agentlib.ErrMissingAPIKey) {
+	if _, err := trayApp.APIKey(); errors.Is(err, agentcli.ErrMissingAPIKey) {
 		_ = notifyIcon.ShowInfo("Tokitoki setup required", "Paste your API key to start syncing.")
 		showSettings(owner, trayApp, up)
 		return
@@ -207,7 +207,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	defer func() { settingsOpen = false }()
 
 	apiKey, err := trayApp.APIKey()
-	if err != nil && !errors.Is(err, agentlib.ErrMissingAPIKey) {
+	if err != nil && !errors.Is(err, agentcli.ErrMissingAPIKey) {
 		showError(owner, "Couldn't load settings", err)
 	}
 
@@ -359,7 +359,7 @@ func runKeyVerification(dialog *walk.Dialog, button *walk.PushButton, status *wa
 	button.SetEnabled(false)
 	_ = status.SetText("Verifying…")
 	go func() {
-		valid, err := apikey.NewVerifier(agentlib.BaseURL()).Verify(context.Background(), key)
+		valid, err := apikey.NewVerifier(agentcli.BaseURL()).Verify(context.Background(), key)
 		dialog.Synchronize(func() {
 			if dialog.IsDisposed() {
 				return

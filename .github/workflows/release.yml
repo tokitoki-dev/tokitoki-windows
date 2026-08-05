@@ -25,9 +25,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      # agentlib resolves from the module proxy at the version go.mod pins, so
-      # a release links a published library, not whatever a sibling checkout
-      # happened to hold.
+      # The build embeds the CLI release pinned in scripts/cli-release-pins.ps1,
+      # fetched and digest-verified by the build task itself, so a release
+      # bundles a published CLI, not whatever a sibling checkout held.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/lxn/walk"
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/agentcli"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/appupdate"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/version"
 )
@@ -84,7 +84,7 @@ func (u *updater) run(ctx context.Context) {
 			continue
 		}
 
-		update, err := appupdate.Check(ctx, agentlib.BaseURL(), version.Version)
+		update, err := appupdate.Check(ctx, agentcli.BaseURL(), version.Version)
 		switch {
 		case errors.Is(err, appupdate.ErrDevBuild):
 			return

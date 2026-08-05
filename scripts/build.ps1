@@ -141,6 +141,14 @@ function Get-LdFlags {
 function Build-App {
     param([switch]$Debug)
 
+    # The pinned shared CLI must be in the embed directory before go build:
+    # go:embed bakes whatever is there, and a stale file from a previous
+    # arch's build would seed users a binary that cannot run.
+    Invoke-Checked "pwsh" @(
+        "-NoProfile", "-File", (Join-Path $PSScriptRoot "fetch-cli-release.ps1"),
+        "-Arch", $Arch, "-Go", $Go
+    )
+
     Ensure-Resource -TargetArch $Arch
     Ensure-Dist
 
@@ -225,6 +233,11 @@ try {
         }
         "clean" {
             Remove-Item -Recurse -Force -LiteralPath $DistDir -ErrorAction SilentlyContinue
+            $embedDir = Join-Path $Root "internal/agentcli/embedded"
+            Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath @(
+                (Join-Path $embedDir "tokitoki.exe"),
+                (Join-Path $embedDir "VERSION")
+            )
         }
         "size" {
             Ensure-Icon

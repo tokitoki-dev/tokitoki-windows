@@ -3,7 +3,6 @@ dist/
 *.dll
 *.pdb
 
-# Local-only workspace: links agentlib from ../tokitoki-cli source. CI and
-# releases must build against the go.mod pin, so this never gets committed.
-go.work
-go.work.sum
+# Fetched by scripts/fetch-cli-release.ps1 and baked in via go:embed; the
+# binary itself is caught by *.exe above.
+internal/agentcli/embedded/VERSION

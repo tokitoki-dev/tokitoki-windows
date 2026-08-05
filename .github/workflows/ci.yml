@@ -20,8 +20,8 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      # agentlib now resolves from the module proxy like any other dependency,
-      # so this repo builds on its own — no sibling checkout required.
+      # The build fetches the pinned shared-CLI release asset itself
+      # (scripts/fetch-cli-release.ps1), so this repo builds on its own.
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

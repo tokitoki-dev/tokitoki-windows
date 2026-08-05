@@ -50,6 +50,12 @@ func New(debounce time.Duration, onChange func(), logger *slog.Logger) *Watcher 
 }
 
 // Start replaces the current watch set with paths.
+//
+// The event loop starts before a single watch is added: AddWith answers
+// through the same fsnotify goroutine that delivers events, so registering
+// thousands of directories with nobody draining Events deadlocks the moment
+// a watched tree is written mid-registration — leaving the whole app stuck
+// before its tray icon ever appears.
 func (w *Watcher) Start(parent context.Context, paths []string) error {
 	w.Stop()
 	if len(paths) == 0 {
@@ -60,12 +66,6 @@ func (w *Watcher) Start(parent context.Context, paths []string) error {
 	if err != nil {
 		return err
 	}
-	for _, path := range paths {
-		if err := addRecursive(fsWatcher, path); err != nil {
-			_ = fsWatcher.Close()
-			return err
-		}
-	}
 
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
@@ -75,6 +75,13 @@ func (w *Watcher) Start(parent context.Context, paths []string) error {
 	w.mu.Unlock()
 
 	go w.loop(ctx, fsWatcher, done)
+
+	for _, path := range paths {
+		if err := addRecursive(fsWatcher, path); err != nil {
+			w.Stop()
+			return err
+		}
+	}
 	return nil
 }
 

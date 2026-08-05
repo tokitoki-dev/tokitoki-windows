@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 // allProviders is every local AI client this app can track. As on macOS,
@@ -17,22 +15,13 @@ var allProviders = []string{
 	"pi", "amp", "droid", "kilo", "hermes", "codebuff", "opencode", "goose",
 }
 
-// Directories contains selected provider directories.
-type Directories struct {
-	ProviderDirs map[agentlib.Provider][]string
-}
-
-// SyncOptions converts Directories into agentlib sync options.
-func (d Directories) SyncOptions() agentlib.SyncOptions {
-	return agentlib.SyncOptions{ProviderDirs: d.ProviderDirs}
-}
-
-// Resolve returns the existing data directory of every known provider.
-func Resolve() Directories {
-	dirs := Directories{ProviderDirs: make(map[agentlib.Provider][]string)}
+// Resolve returns the existing data directory of every known provider, keyed
+// by the provider name the shared CLI's --provider-dir flag expects.
+func Resolve() map[string][]string {
+	dirs := make(map[string][]string)
 	for _, provider := range allProviders {
 		if path := firstExistingPath(paths(provider)); path != "" {
-			dirs.ProviderDirs[agentlib.Provider(provider)] = []string{path}
+			dirs[provider] = []string{path}
 		}
 	}
 	return dirs

@@ -7,16 +7,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/agentcli"
 )
 
-// Client is the subset of agentlib.Client used by Syncer.
+// Client is the subset of the shared-CLI client used by Syncer.
 type Client interface {
-	Sync(context.Context, agentlib.SyncOptions) error
+	Sync(ctx context.Context, providerDirs map[string][]string) error
 }
 
 // OptionsFunc resolves provider directories for each sync attempt.
-type OptionsFunc func() agentlib.SyncOptions
+type OptionsFunc func() map[string][]string
 
 // Syncer runs sync requests one at a time and keeps at most one queued request.
 type Syncer struct {
@@ -77,15 +77,15 @@ func (s *Syncer) loop(ctx context.Context) {
 }
 
 func (s *Syncer) syncOnce(ctx context.Context) {
-	options := s.options()
-	if len(options.ProviderDirs) == 0 {
+	providerDirs := s.options()
+	if len(providerDirs) == 0 {
 		s.logger.Debug("skip sync; no existing provider directories")
 		return
 	}
 
-	syncCtx, cancel := context.WithTimeout(ctx, agentlib.DefaultUploadTimeout)
+	syncCtx, cancel := context.WithTimeout(ctx, agentcli.SyncTimeout)
 	defer cancel()
-	if err := s.client.Sync(syncCtx, options); err != nil {
+	if err := s.client.Sync(syncCtx, providerDirs); err != nil {
 		s.logger.Warn("sync failed", "error", err)
 		return
 	}

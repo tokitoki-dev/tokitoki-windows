@@ -5,16 +5,12 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 func TestSyncerCoalescesRequests(t *testing.T) {
 	client := &recordingClient{started: make(chan struct{}), release: make(chan struct{})}
-	options := func() agentlib.SyncOptions {
-		return agentlib.SyncOptions{
-			ProviderDirs: map[agentlib.Provider][]string{agentlib.ProviderClaude: []string{t.TempDir()}},
-		}
+	options := func() map[string][]string {
+		return map[string][]string{"claude": {t.TempDir()}}
 	}
 	syncer := New(client, options, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -34,7 +30,7 @@ func TestSyncerCoalescesRequests(t *testing.T) {
 
 func TestSyncerSkipsEmptyOptions(t *testing.T) {
 	client := &recordingClient{started: make(chan struct{}), release: make(chan struct{})}
-	syncer := New(client, func() agentlib.SyncOptions { return agentlib.SyncOptions{} }, nil)
+	syncer := New(client, func() map[string][]string { return nil }, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	syncer.Start(ctx)
@@ -56,7 +52,7 @@ type recordingClient struct {
 	once    sync.Once
 }
 
-func (c *recordingClient) Sync(context.Context, agentlib.SyncOptions) error {
+func (c *recordingClient) Sync(context.Context, map[string][]string) error {
 	c.mu.Lock()
 	c.count++
 	c.once.Do(func() { close(c.started) })

@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 const fileName = "windows-settings.json"
@@ -93,9 +91,4 @@ func (s *Store) Save(settings Settings) error {
 		return err
 	}
 	return os.Rename(tmpPath, s.path)
-}
-
-// DataDir returns the default shared Tokitoki data directory.
-func DataDir() (string, error) {
-	return agentlib.DefaultDataDir()
 }

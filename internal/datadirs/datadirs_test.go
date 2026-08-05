@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
-
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
 )
 
 // setHome fakes the home directory for os.UserHomeDir, which reads
@@ -35,10 +33,10 @@ func TestResolveUsesExistingProviderDirs(t *testing.T) {
 	}
 
 	got := Resolve()
-	if dirs := got.ProviderDirs[agentlib.ProviderClaude]; len(dirs) != 1 || dirs[0] != claude {
+	if dirs := got["claude"]; len(dirs) != 1 || dirs[0] != claude {
 		t.Fatalf("claude dirs = %v, want %q", dirs, claude)
 	}
-	if dirs := got.ProviderDirs[agentlib.ProviderCodex]; len(dirs) != 0 {
+	if dirs := got["codex"]; len(dirs) != 0 {
 		t.Fatalf("codex dirs = %v, want empty missing dir", dirs)
 	}
 }
@@ -101,7 +99,7 @@ func TestCopilotExporterFilePathIsResolvedAndWatchedByParent(t *testing.T) {
 	t.Setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", file)
 
 	resolved := Resolve()
-	if dirs := resolved.ProviderDirs[agentlib.ProviderCopilot]; len(dirs) != 1 || dirs[0] != file {
+	if dirs := resolved["copilot"]; len(dirs) != 1 || dirs[0] != file {
 		t.Fatalf("copilot dirs = %v, want exporter file", dirs)
 	}
 	if got := WatchPaths(); !reflect.DeepEqual(got, []string{dir}) {

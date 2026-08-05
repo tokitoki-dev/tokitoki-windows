@@ -1,8 +1,8 @@
 # Tokitoki Windows
 
 A native Windows tray app for Tokitoki. The app is a small Go executable that
-uses the shared `github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib` package for local
-AI usage scanning and upload.
+drives the shared `tokitoki` CLI for all scanning and uploading — the same
+binary the macOS app and every editor plugin invoke.
 
 ## Architecture
 
@@ -12,11 +12,14 @@ tokitoki-windows.exe
   ├─ launch-at-login registry integration
   ├─ recursive Claude Code / Codex directory watcher
   ├─ periodic sync scheduler
-  └─ agentlib sync engine from the tokitoki-cli module
+  └─ shared tokitoki CLI at %USERPROFILE%\.tokitoki\bin\tokitoki.exe
+       └─ one short-lived invocation per operation
 ```
 
-The Windows client does not bundle or spawn a separate agent process. It builds
-one executable and shares the same `~/.tokitoki` state as the CLI.
+The app links none of the CLI's Go packages. Each operation — sync, reading
+or writing the API key, minting a dashboard login link — invokes the shared
+CLI once and parses its standard output, so every Tokitoki front-end on a
+machine runs exactly the same logic against the same `~/.tokitoki` state.
 
 All server access uses `TOKITOKI_BASE_URL` and defaults to
 `https://tokitoki.dev`. Override it before starting the app when testing a
@@ -27,41 +30,39 @@ $env:TOKITOKI_BASE_URL = "http://localhost:9093"
 .\tokitoki-windows.exe
 ```
 
-## The agent library
+## The shared CLI
 
-`agentlib` comes from the published `github.com/tokitoki-dev/tokitoki-cli`
-module at the version `go.mod` pins. CI and the release workflow build exactly
-that: they check out this repo alone and resolve the pin from the module proxy,
-so a release always links published, tagged library code.
+The app follows the shared-CLI contract in `tokitoki-cli/README.md`, the same
+three rules `AgentProcess.swift` implements on macOS:
 
-Local development instead builds from the sibling `../tokitoki-cli` source
-checkout, through a gitignored `go.work` in this directory:
+1. **Resolve the shared binary** at
+   `%USERPROFILE%\.tokitoki\bin\tokitoki.exe` for every invocation.
+2. **Seed, never download.** Release builds embed the pinned CLI release via
+   `go:embed` (`internal/agentcli/embedded/`). At startup the app seeds the
+   shared path when it is missing or older than the embedded copy — staged
+   and renamed into place, never a downgrade, never a network fetch.
+3. **Delegate freshness to the CLI.** The app runs `tokitoki update` at
+   launch and daily; the CLI owns the whole check-download-verify-swap
+   sequence for itself.
 
-```text
-go 1.25.0
+The embedded CLI is pinned in `scripts/cli-release-pins.ps1` — a tag plus a
+SHA-256 per architecture, reviewed together. `scripts/fetch-cli-release.ps1`
+downloads the release asset, verifies the digest, the embedded `GOARCH`, and
+(host arch permitting) the version the binary reports, then drops it into the
+embed directory. The build task runs it automatically.
 
-use (
-	.
-	../tokitoki-cli
-)
+Dev builds (`go build` without the fetched asset) embed nothing and seed
+nothing: they use whatever shared CLI the machine already has. To develop
+against unreleased CLI changes, build the sibling checkout straight into the
+shared path:
+
+```powershell
+go build -o "$env:USERPROFILE\.tokitoki\bin\tokitoki.exe" ../tokitoki-cli/cmd/tokitoki
 ```
 
-With that file present, every `go build` / `go test` here links the sibling
-source, so app and CLI changes can be developed together without cutting a CLI
-release. Because `go.work` never gets committed, it cannot leak into CI. To
-reproduce the exact release build locally, disable the workspace:
-
-```sh
-GOWORK=off go build ./...
-```
-
-To move a release to a newer CLI, tag it in `tokitoki-cli` first, then bump the
-pin here:
-
-```sh
-GOWORK=off go get github.com/tokitoki-dev/tokitoki-cli@v0.1.4
-GOWORK=off go mod tidy
-```
+To move a release to a newer CLI, tag and release it in `tokitoki-cli` first,
+then update `scripts/cli-release-pins.ps1` with the new tag and the
+`checksums.txt` digests from that release.
 
 ## Build
 

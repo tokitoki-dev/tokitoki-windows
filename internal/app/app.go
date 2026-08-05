@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib"
+	"github.com/tokitoki-dev/tokitoki-windows/internal/agentcli"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/datadirs"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/settings"
 	"github.com/tokitoki-dev/tokitoki-windows/internal/syncer"
@@ -18,12 +18,15 @@ const (
 	syncInterval  = 30 * time.Minute
 	watchDebounce = 2 * time.Second
 
-	dashboardLoginTimeout = 10 * time.Second
+	// cliUpdateInterval paces `tokitoki update` after the launch run — rule
+	// three of the shared-CLI contract: the CLI owns its own freshness, the
+	// app only asks on a slow timer.
+	cliUpdateInterval = 24 * time.Hour
 )
 
 // App owns the long-lived Windows client services.
 type App struct {
-	client     *agentlib.Client
+	client     *agentcli.Client
 	settings   *settings.Store
 	syncer     *syncer.Syncer
 	watcher    *watcher.Watcher
@@ -43,18 +46,17 @@ func New(logger *slog.Logger) (*App, error) {
 		logger = slog.Default()
 	}
 
-	client, err := agentlib.New(agentlib.Options{Logger: logger})
+	dataDir, err := agentcli.DataDir()
 	if err != nil {
 		return nil, err
 	}
 
-	store := settings.NewStore(client.DataDir())
 	app := &App{
-		client:   client,
-		settings: store,
+		client:   agentcli.NewClient(logger),
+		settings: settings.NewStore(dataDir),
 		logger:   logger,
 	}
-	app.syncer = syncer.New(client, app.syncOptions, logger)
+	app.syncer = syncer.New(app.client, app.syncOptions, logger)
 	app.watcher = watcher.New(watchDebounce, app.syncer.Trigger, logger)
 	return app, nil
 }
@@ -76,8 +78,30 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.RestartMonitoring(); err != nil {
 		return err
 	}
+	// The shared CLI must exist before anything invokes it: the startup
+	// Settings dialog reads the key right after Start returns, so seeding
+	// runs here, not in a goroutine it would race. The common case — shared
+	// CLI already current — costs one version query.
+	agentcli.Bootstrap(ctx, a.logger)
 	a.syncer.Trigger()
+	go a.updateSharedCLI(ctx)
 	return nil
+}
+
+// updateSharedCLI keeps the shared CLI fresh by delegating to the CLI
+// itself: `tokitoki update` at launch, then daily. Failure costs a log line;
+// a dev machine without a shared CLI just logs and tries again tomorrow.
+func (a *App) updateSharedCLI(ctx context.Context) {
+	for {
+		if err := a.client.Update(ctx); err != nil {
+			a.logger.Debug("shared CLI update", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(cliUpdateInterval):
+		}
+	}
 }
 
 // Stop stops filesystem monitoring.
@@ -158,24 +182,22 @@ func (a *App) SyncNow() {
 // already signed in; otherwise the plain server URL. Callers must not invoke
 // this on the UI thread — it talks to the network.
 func (a *App) DashboardTarget(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, dashboardLoginTimeout)
-	defer cancel()
 	url, err := a.client.DashboardURL(ctx)
 	if err != nil {
 		a.logger.Debug("dashboard login link unavailable", "error", err)
-		return agentlib.BaseURL()
+		return agentcli.BaseURL()
 	}
 	return url
 }
 
 // APIKey returns the configured API key.
 func (a *App) APIKey() (string, error) {
-	return a.client.GetAPIKey()
+	return a.client.APIKey(context.Background())
 }
 
 // SetAPIKey saves the configured API key.
 func (a *App) SetAPIKey(apiKey string) error {
-	if err := a.client.SetAPIKey(apiKey); err != nil {
+	if err := a.client.SetAPIKey(context.Background(), apiKey); err != nil {
 		return err
 	}
 	a.SyncNow()
@@ -198,13 +220,13 @@ func (a *App) RestartMonitoring() error {
 // syncOptions resolves what a sync run should scan. Tracking off means
 // nothing: the syncer already treats an empty provider set as a no-op. A
 // missing API key is deliberately not checked here — scanning is offline
-// work, events queue locally, and agentlib skips the upload half on its own
+// work, events queue locally, and the CLI skips the upload half on its own
 // until a key is saved.
-func (a *App) syncOptions() agentlib.SyncOptions {
+func (a *App) syncOptions() map[string][]string {
 	if !a.TrackingEnabled() {
-		return agentlib.SyncOptions{}
+		return nil
 	}
-	return datadirs.Resolve().SyncOptions()
+	return datadirs.Resolve()
 }
 
 func (a *App) setTracking(enabled bool) {
