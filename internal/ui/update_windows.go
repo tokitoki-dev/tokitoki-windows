@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	// firstCheckDelay keeps the update check out of the app's startup work.
-	firstCheckDelay = time.Minute
+	// firstCheckDelay is how long after launch the first check runs: every
+	// start checks promptly, but a few seconds keep it off the startup path
+	// where the tray icon and first sync are still coming up.
+	firstCheckDelay = 5 * time.Second
 	checkInterval   = 24 * time.Hour
 )
 
@@ -97,6 +99,55 @@ func (u *updater) run(ctx context.Context) {
 			u.announce(update)
 		}
 	}
+}
+
+// checkNow is the Settings button's user-requested check: it reports next to
+// the button and — when a new build exists — walks straight into the usual
+// install offer. No balloon: the user is already looking at the answer.
+func (u *updater) checkNow(dialog *walk.Dialog, button *walk.PushButton, status *walk.Label) {
+	u.check(dialog, button, status, true)
+}
+
+// checkQuietly is the check every Settings opening runs on its own: the same
+// answer in the same status label, but never a dialog the user did not ask
+// for — installing stays one deliberate click away.
+func (u *updater) checkQuietly(dialog *walk.Dialog, button *walk.PushButton, status *walk.Label) {
+	u.check(dialog, button, status, false)
+}
+
+// check asks the server off the UI thread and reports into the Settings
+// dialog. offer decides whether a found update opens the install offer.
+func (u *updater) check(dialog *walk.Dialog, button *walk.PushButton, status *walk.Label, offer bool) {
+	button.SetEnabled(false)
+	_ = status.SetText("Checking…")
+	go func() {
+		update, err := appupdate.Check(context.Background(), agentcli.BaseURL(), version.Version)
+		u.owner.Synchronize(func() {
+			if dialog.IsDisposed() {
+				return
+			}
+			button.SetEnabled(true)
+			switch {
+			case errors.Is(err, appupdate.ErrDevBuild):
+				_ = status.SetText("Development build; updates are disabled.")
+			case err != nil:
+				u.logger.Warn("settings update check", "error", err)
+				_ = status.SetText("⚠ Couldn't check for updates. Try again.")
+			case update == nil:
+				_ = status.SetText("You're up to date.")
+			default:
+				_ = status.SetText(fmt.Sprintf("Version %s is available.", update.Version))
+				// The same state the background announcement leaves behind, so
+				// a declined install still has its menu entry to come back to.
+				u.latest = update
+				u.ensureMenuAction()
+				_ = u.updateAction.SetText(fmt.Sprintf("Install update %s…", update.Version))
+				if offer {
+					u.offerInstall(dialog, update)
+				}
+			}
+		})
+	}()
 }
 
 // announce surfaces a fresh offer: a tray balloon, and a menu entry that

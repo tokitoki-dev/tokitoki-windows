@@ -236,6 +236,7 @@ try {
             $embedDir = Join-Path $Root "internal/agentcli/embedded"
             Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath @(
                 (Join-Path $embedDir "tokitoki.exe"),
+                (Join-Path $embedDir "tokitoki.exe.gz"),
                 (Join-Path $embedDir "VERSION")
             )
         }

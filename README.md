@@ -38,8 +38,9 @@ three rules `AgentProcess.swift` implements on macOS:
 1. **Resolve the shared binary** at
    `%USERPROFILE%\.tokitoki\bin\tokitoki.exe` for every invocation.
 2. **Seed, never download.** Release builds embed the pinned CLI release via
-   `go:embed` (`internal/agentcli/embedded/`). At startup the app seeds the
-   shared path when it is missing or older than the embedded copy — staged
+   `go:embed`, gzip-compressed to less than half its size
+   (`internal/agentcli/embedded/`). At startup the app seeds the shared path
+   when it is missing or older than the embedded copy — decompressed, staged
    and renamed into place, never a downgrade, never a network fetch.
 3. **Delegate freshness to the CLI.** The app runs `tokitoki update` at
    launch and daily; the CLI owns the whole check-download-verify-swap

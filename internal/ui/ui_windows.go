@@ -215,25 +215,19 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	var apiKeyEdit *walk.LineEdit
 	var verifyButton *walk.PushButton
 	var verifyStatus *walk.Label
+	var launchBox *walk.CheckBox
+	var updatesBox *walk.CheckBox
+	var checkButton *walk.PushButton
+	var checkStatus *walk.Label
 
 	family, pointSize := messageFont()
 	headerFont := Font{Family: family, PointSize: pointSize, Bold: true}
 
-	// Both switches are staged locally and written by Save, so Cancel still
-	// means "change nothing" — the same contract the API key field has.
-	dpi := owner.AsFormBase().DPI()
-	launchToggle, err := newToggle(dpi, launch.IsEnabled(), nil)
-	if err != nil {
-		showError(owner, "Couldn't open settings", err)
-		return
-	}
-	defer launchToggle.dispose()
-	updatesToggle, err := newToggle(dpi, trayApp.AutomaticUpdatesEnabled(), nil)
-	if err != nil {
-		showError(owner, "Couldn't open settings", err)
-		return
-	}
-	defer updatesToggle.dispose()
+	// Every control applies itself the moment it changes — there is no Save
+	// button to batch them and no Cancel to unwind them, so closing the
+	// dialog can never lose anything. The key saves on Enter or focus loss,
+	// not per keystroke: a half-pasted key must never reach the store.
+	lastSavedKey := apiKey
 
 	children := []Widget{
 		Label{
@@ -249,14 +243,28 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 				_ = verifyStatus.SetText("")
 				verifyButton.SetEnabled(strings.TrimSpace(apiKeyEdit.Text()) != "")
 			},
+			OnEditingFinished: func() {
+				key := strings.TrimSpace(apiKeyEdit.Text())
+				if key == "" || key == lastSavedKey {
+					return
+				}
+				if err := trayApp.SetAPIKey(key); err != nil {
+					showError(dialog, "Couldn't save the API key", err)
+					return
+				}
+				lastSavedKey = key
+			},
 		},
 		Composite{
 			Layout: HBox{MarginsZero: true, Spacing: 8},
 			Children: []Widget{
 				PushButton{
-					AssignTo:    &verifyButton,
-					Text:        "Verify Key",
-					Enabled:     strings.TrimSpace(apiKey) != "",
+					AssignTo: &verifyButton,
+					Text:     "Verify Key",
+					Enabled:  strings.TrimSpace(apiKey) != "",
+					// Same width as Check for Updates below: the two button
+					// columns read as one aligned rail.
+					MinSize:     Size{Width: 170},
 					ToolTipText: "Check this key with the Tokitoki server",
 					OnClicked: func() {
 						runKeyVerification(dialog, verifyButton, verifyStatus,
@@ -271,10 +279,36 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 	}
 	muted := mutedTextColor()
 	children = append(children,
-		settingRow(headerFont, muted, launchToggle,
-			"Launch at login", "Start automatically when you sign in"),
-		settingRow(headerFont, muted, updatesToggle,
-			"Automatic updates", "Check for new versions in the background"),
+		settingRow(headerFont, muted, &launchBox, launch.IsEnabled(),
+			"Launch at login", "Start automatically when you sign in", func() {
+				if err := launch.SetEnabled(launchBox.Checked()); err != nil {
+					showError(dialog, "Couldn't save settings", err)
+				}
+			}),
+		settingRow(headerFont, muted, &updatesBox, trayApp.AutomaticUpdatesEnabled(),
+			"Automatic updates", "Check for new versions in the background", func() {
+				if err := trayApp.SetAutomaticUpdatesEnabled(updatesBox.Checked()); err != nil {
+					showError(dialog, "Couldn't save settings", err)
+				}
+			}),
+		Composite{
+			Layout: HBox{MarginsZero: true, Spacing: 8},
+			Children: []Widget{
+				PushButton{
+					AssignTo: &checkButton,
+					Text:     "Check for Updates",
+					// The default button width crops the caption; give the
+					// text room to breathe.
+					MinSize:     Size{Width: 170},
+					ToolTipText: "Ask the server for a newer version now",
+					OnClicked: func() {
+						up.checkNow(dialog, checkButton, checkStatus)
+					},
+				},
+				Label{AssignTo: &checkStatus},
+				HSpacer{},
+			},
+		},
 		VSpacer{},
 		separatorLine(),
 		Composite{
@@ -282,33 +316,6 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 			Children: []Widget{
 				Label{Text: version.Summary(), TextColor: muted},
 				HSpacer{},
-				PushButton{
-					Text: "Cancel",
-					OnClicked: func() {
-						dialog.Cancel()
-					},
-				},
-				PushButton{
-					Text: "Save",
-					OnClicked: func() {
-						apiKey := strings.TrimSpace(apiKeyEdit.Text())
-						if apiKey != "" {
-							if err := trayApp.SetAPIKey(apiKey); err != nil {
-								showError(dialog, "Couldn't save settings", err)
-								return
-							}
-						}
-						if err := launch.SetEnabled(launchToggle.checked()); err != nil {
-							showError(dialog, "Couldn't save settings", err)
-							return
-						}
-						if err := trayApp.SetAutomaticUpdatesEnabled(updatesToggle.checked()); err != nil {
-							showError(dialog, "Couldn't save settings", err)
-							return
-						}
-						dialog.Accept()
-					},
-				},
 			},
 		},
 	)
@@ -328,7 +335,7 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		AssignTo:  &dialog,
 		Title:     "Settings",
 		Icon:      dialogIcon,
-		MinSize:   Size{Width: 460, Height: 340},
+		MinSize:   Size{Width: 460, Height: 380},
 		FixedSize: true,
 		Font:      Font{Family: family, PointSize: pointSize},
 		Layout: VBox{
@@ -342,6 +349,9 @@ func showSettings(owner walk.Form, trayApp *coreapp.App, up *updater) {
 		return
 	}
 	applyDialogTheme(dialog.Handle())
+	// Every opening checks for updates on its own; the button stays for
+	// asking again and for walking into the install.
+	up.checkQuietly(dialog, checkButton, checkStatus)
 	dialog.Run()
 	// walk re-shows a dialog's owner as the dialog closes. Here the owner is
 	// the tray's hidden window, which must not surface.

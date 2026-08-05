@@ -2,8 +2,10 @@ package agentcli
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"embed"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -12,15 +14,17 @@ import (
 	"strings"
 )
 
-// The release build embeds the pinned CLI here (fetch-cli-release.ps1 puts
-// it in place; the files are gitignored). A dev build embeds only the README
-// and Bootstrap does nothing — it uses whatever shared CLI the machine has.
+// The release build embeds the pinned CLI here, gzip-compressed — it more
+// than halves the shipped executable, and the bytes are only ever needed
+// when a seed actually happens (fetch-cli-release.ps1 puts the files in
+// place; they are gitignored). A dev build embeds only the README and
+// Bootstrap does nothing — it uses whatever shared CLI the machine has.
 //
 //go:embed all:embedded
 var embeddedFS embed.FS
 
 const (
-	embeddedBinary  = "embedded/tokitoki.exe"
+	embeddedBinary  = "embedded/tokitoki.exe.gz"
 	embeddedVersion = "embedded/VERSION"
 )
 
@@ -60,9 +64,23 @@ func Bootstrap(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-// seed stages the embedded bytes next to the destination and renames them
-// into place, so no concurrent invocation ever sees a half-written CLI.
-func seed(data []byte, shared string) error {
+// seed decompresses the embedded bytes, stages them next to the destination
+// and renames them into place, so no concurrent invocation ever sees a
+// half-written CLI. Decompression happens only here — the common startup
+// path never touches the compressed payload.
+func seed(compressed []byte, shared string) error {
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(reader)
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
 		return err
 	}
