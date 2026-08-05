@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
-	github.com/tokitoki-dev/tokitoki-cli v0.1.4
+	github.com/tokitoki-dev/tokitoki-cli v0.1.6
 	golang.org/x/sys v0.47.0
 )
 
