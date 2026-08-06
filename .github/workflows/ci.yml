@@ -1,8 +1,7 @@
+# Windows runners bill double, so CI runs only on main pushes and PRs to main
+# (mirrors the Go project's policy).
 name: CI
 
-# Only main and the pull requests targeting it. Work branches push often and
-# a Windows runner bills at double rate, so they are checked when they are
-# proposed for merge, not on every commit.
 on:
   push:
     branches: [main]
@@ -10,30 +9,32 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: windows-latest
     steps:
-      # The build fetches the pinned shared-CLI release asset itself
-      # (scripts/fetch-cli-release.ps1), so this repo builds on its own.
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
-
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # Bundle the pinned CLI release BEFORE any compile step so clippy, tests,
+      # and the release build all cover the embedded_cli code path. The pin
+      # (tag + sha256) lives in scripts/cli-release-pins.ps1; the download is
+      # rejected on digest mismatch.
+      - name: Bundle pinned CLI
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch amd64
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Test
-        run: pwsh -NoProfile -File scripts/build.ps1 -Task test
-
-      # Both release architectures are compiled here, not just the host one:
-      # arm64 ships to users, so a break in it must fail CI, not the release.
-      - name: Build both release architectures
-        run: |
-          foreach ($arch in @("amd64", "arm64")) {
-            pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch
-          }
+        run: cargo test --locked
+      - name: Build (release)
+        run: cargo build --release --locked

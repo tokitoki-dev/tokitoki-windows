@@ -1,155 +1,76 @@
-# Tokitoki Windows
+# tokitoki-windows-rust
 
-A native Windows tray app for Tokitoki. The app is a small Go executable that
-drives the shared `tokitoki` CLI for all scanning and uploading — the same
-binary the macOS app and every editor plugin invoke.
+Rust port of [`tokitoki-windows`](../tokitoki-windows) — a native Windows
+system-tray agent that watches local AI-coding-assistant data directories
+(Claude Code, Codex, Copilot, Gemini, and 11 more) and delegates every
+sync/key/update operation to the shared `tokitoki` CLI at
+`%USERPROFILE%\.tokitoki\bin\tokitoki.exe`, the same contract the macOS app
+and editor plugins follow.
 
-## Architecture
+## Module map (Go → Rust)
 
-```text
-tokitoki-windows.exe
-  ├─ native Windows tray and settings UI
-  ├─ launch-at-login registry integration
-  ├─ recursive Claude Code / Codex directory watcher
-  ├─ periodic sync scheduler
-  └─ shared tokitoki CLI at %USERPROFILE%\.tokitoki\bin\tokitoki.exe
-       └─ one short-lived invocation per operation
-```
-
-The app links none of the CLI's Go packages. Each operation — sync, reading
-or writing the API key, minting a dashboard login link — invokes the shared
-CLI once and parses its standard output, so every Tokitoki front-end on a
-machine runs exactly the same logic against the same `~/.tokitoki` state.
-
-All server access uses `TOKITOKI_BASE_URL` and defaults to
-`https://tokitoki.dev`. Override it before starting the app when testing a
-local or staging server:
-
-```powershell
-$env:TOKITOKI_BASE_URL = "http://localhost:9093"
-.\tokitoki-windows.exe
-```
-
-## The shared CLI
-
-The app follows the shared-CLI contract in `tokitoki-cli/README.md`, the same
-three rules `AgentProcess.swift` implements on macOS:
-
-1. **Resolve the shared binary** at
-   `%USERPROFILE%\.tokitoki\bin\tokitoki.exe` for every invocation.
-2. **Seed, never download.** Release builds embed the pinned CLI release via
-   `go:embed`, gzip-compressed to less than half its size
-   (`internal/agentcli/embedded/`). At startup the app seeds the shared path
-   when it is missing or older than the embedded copy — decompressed, staged
-   and renamed into place, never a downgrade, never a network fetch.
-3. **Delegate freshness to the CLI.** The app runs `tokitoki update` at
-   launch and daily; the CLI owns the whole check-download-verify-swap
-   sequence for itself.
-
-The embedded CLI is pinned in `scripts/cli-release-pins.ps1` — a tag plus a
-SHA-256 per architecture, reviewed together. `scripts/fetch-cli-release.ps1`
-downloads the release asset, verifies the digest, the embedded `GOARCH`, and
-(host arch permitting) the version the binary reports, then drops it into the
-embed directory. The build task runs it automatically.
-
-Dev builds (`go build` without the fetched asset) embed nothing and seed
-nothing: they use whatever shared CLI the machine already has. To develop
-against unreleased CLI changes, build the sibling checkout straight into the
-shared path:
-
-```powershell
-go build -o "$env:USERPROFILE\.tokitoki\bin\tokitoki.exe" ../tokitoki-cli/cmd/tokitoki
-```
-
-To move a release to a newer CLI, tag and release it in `tokitoki-cli` first,
-then update `scripts/cli-release-pins.ps1` with the new tag and the
-`checksums.txt` digests from that release.
+| Go package           | Rust module        | Status |
+|----------------------|--------------------|--------|
+| `internal/agentcli`  | `agent_cli`        | ✅ client, sync args, version pinning, embedded-CLI bootstrap |
+| `internal/apikey`    | `api_key`          | ✅ server-side key verification |
+| `internal/app`       | `app`              | ✅ coordinator, prefs, daily CLI update loop |
+| `internal/appupdate` | `app_update`       | ✅ check, trusted transport, sha256 verify, atomic swap, relaunch |
+| `internal/datadirs`  | `data_dirs`        | ✅ all 15 providers, env overrides, watch-path union |
+| `internal/instance`  | `instance`         | ✅ `Local\TokitokiWindowsTray` named mutex |
+| `internal/launch`    | `launch`           | ✅ HKCU Run key, quote/reconcile semantics |
+| `internal/logo`      | `logo`             | ✅ SDF clock-mark renderer (ring + hand, 3×3 SSAA) |
+| `internal/settings`  | `settings`         | ✅ atomic JSON, inverted flags, legacy-field tolerant |
+| `internal/syncer`    | `syncer`           | ✅ capacity-1 coalescing worker + ticker |
+| `internal/ui`        | `ui`               | ✅ tray, menu, balloons, theme watch, TaskDialogs, updater flow, Settings window (API-key edit + verify, toggles, update check, dark chrome) |
+| `internal/version`   | `version`          | ✅ build-time env injection |
+| `internal/watcher`   | `watcher`          | ✅ recursive debounced watching via `notify` |
 
 ## Build
 
-```sh
-make build
+```powershell
+make            # default: build sibling ../tokitoki-cli from source, gzip it
+                # into embedded/, then cargo build --release (CLI embedded)
+make clean      # cargo clean + remove the bundled CLI payload
 ```
 
-The release executable is written to:
+`make build` stamps the local CLI with the pinned version from
+`scripts/cli-release-pins.ps1` (override: `make CLI_VERSION=x.y.z`); other
+knobs: `ARCH=arm64`, `PS=pwsh`.
 
-```text
-dist/tokitoki-windows-amd64.exe
+CI instead runs `scripts/fetch-cli-release.ps1`, which downloads the pinned
+release from GitHub, rejects it unless its SHA-256 matches the pin, gzips it
+into `embedded/`, and short-circuits when the payload already matches.
+
+A bare `cargo build` with an empty `embedded/` is a dev build: no seeding,
+no downloads, ever. Release metadata is injected via env vars read by
+`build.rs`:
+
+```powershell
+$env:TOKITOKI_VERSION = "0.1.0"; $env:TOKITOKI_COMMIT = "abc123"
+$env:TOKITOKI_BUILD_DATE = "2026-01-01T00:00:00Z"; cargo build --release
 ```
 
-For compatibility, the default amd64 build also writes:
+## Checks
 
-```text
-dist/tokitoki-windows.exe
+```powershell
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test
+cargo fmt --check        # import-group options need nightly: cargo +nightly fmt
 ```
 
-`make` without a target also runs `make build`.
+Lint policy lives in `Cargo.toml` (`clippy::all` = deny, `pedantic` = warn,
+`unwrap_used`/`expect_used` = deny outside tests via `clippy.toml`).
 
-Build Windows on ARM:
+## Scaffold TODOs
 
-```sh
-make build-arm64
-```
+- **Marquee install progress**: installs run silently in the background; the
+  Go app shows a marquee-progress TaskDialog with Cancel.
+- **arm64 release builds**: add an `aarch64-pc-windows-msvc` job mirroring
+  the Go release workflow.
 
-That writes:
+## Behavior constants (parity with Go)
 
-```text
-dist/tokitoki-windows-arm64.exe
-```
-
-Build both release architectures:
-
-```sh
-make build-all
-```
-
-Set release metadata:
-
-```sh
-make build-all VERSION=1.0.0 COMMIT=$(git rev-parse --short HEAD)
-```
-
-Development builds keep a console for diagnostics:
-
-```sh
-make debug
-```
-
-If the manifest resource needs to be regenerated:
-
-```sh
-make generate
-```
-
-## Release
-
-Releases are cut by tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`,
-which tests, builds both architectures, checks each binary really is the
-architecture it claims, and publishes a GitHub release carrying:
-
-```text
-tokitoki-windows-amd64.exe
-tokitoki-windows-arm64.exe
-```
-
-Those names are what the server's asset matcher reads, so it can hand each
-machine the right build. The unsuffixed `dist/tokitoki-windows.exe` produced by
-local builds is deliberately not published.
-
-The tag must point at a commit on `main` — the workflow refuses otherwise — so
-merge first, then:
-
-```sh
-git switch main
-git merge --ff-only dev
-git push origin main
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-A published GitHub release does not ship anything to users on its own; rolling
-it out still happens in `/admin/releases`.
-
-## License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Data dir `%USERPROFILE%\.tokitoki` · settings `windows-settings.json` ·
+sync every 30 min · watch debounce 2 s · CLI update daily · app update check
+5 s after launch, then daily · sync timeout 2 min · short CLI ops 15 s ·
+base URL `TOKITOKI_BASE_URL` (default `https://tokitoki.dev`).

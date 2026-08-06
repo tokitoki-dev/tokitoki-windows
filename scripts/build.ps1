@@ -1,251 +1,84 @@
+# Local build driver (invoked by the Makefile).
+#
+#   build (default): compile the sibling ../tokitoki-cli from source, gzip it
+#                    into embedded/, then `cargo build --release` so the app
+#                    binary embeds the payload.
+#   clean:           `cargo clean` plus the fetched/bundled CLI payload.
+#
+# The bundled CLI is stamped with the pinned release version by default
+# (scripts/cli-release-pins.ps1) so the app's never-downgrade seeding logic
+# sees a comparable version; override with -CliVersion for local experiments.
+
 [CmdletBinding()]
 param(
-    [ValidateSet("build", "debug", "test", "generate", "clean", "size")]
-    [string]$Task = "build",
-
-    [ValidateSet("amd64", "arm64")]
-    [string]$Arch = "amd64",
-
-    [string]$Version = "0.1.0",
-    [string]$Commit = "local",
-    [string]$BuildDate = "unknown",
-    [string]$Go = "go"
+    [ValidateSet("build", "clean")] [string]$Task = "build",
+    [ValidateSet("amd64", "arm64")] [string]$Arch = "amd64",
+    [string]$CliVersion = ""
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "cli-release-pins.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
-$Root = Split-Path -Parent $PSScriptRoot
-$App = "tokitoki-windows"
-$Pkg = "./cmd/tokitoki-windows"
-$DistDir = Join-Path $Root "dist"
-$Manifest = Join-Path $Root "cmd/tokitoki-windows/tokitoki-windows.exe.manifest"
-$ResourcesGo = Join-Path $Root "cmd/tokitoki-windows/resources.go"
-$IconSvg = Join-Path $Root "assets/app-icon.svg"
-$IconIco = Join-Path $Root "assets/app-icon.ico"
-$VersionPkg = "github.com/tokitoki-dev/tokitoki-windows/internal/version"
+$embedded = Join-Path $root "embedded"
+$gzPath = Join-Path $embedded "tokitoki.exe.gz"
+$versionPath = Join-Path $embedded "VERSION"
 
-function Stop-Build {
-    param(
-        [string]$Message,
-        [int]$Code = 1
-    )
+# cargo from PATH, falling back to the default rustup location.
+$cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+$cargo = if ($cargoCmd) { $cargoCmd.Source } else { Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe" }
+if (-not (Test-Path $cargo)) { throw "cargo not found on PATH or in ~\.cargo\bin" }
 
-    [Console]::Error.WriteLine($Message)
-    exit $Code
+function Invoke-Clean {
+    Push-Location $root
+    try { & $cargo clean } finally { Pop-Location }
+    Remove-Item -Force -ErrorAction SilentlyContinue $gzPath, $versionPath,
+        (Join-Path $embedded "tokitoki.exe"), (Join-Path $embedded ".tokitoki-local.exe")
+    Write-Host "clean: done"
 }
 
-function Invoke-Checked {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments
-    )
-
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Build "$FilePath failed with exit code $LASTEXITCODE" $LASTEXITCODE
-    }
-}
-
-function Ensure-Dist {
-    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-}
-
-function Find-Magick {
-    $command = Get-Command magick -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
+function Invoke-Build {
+    $cliSource = Join-Path (Split-Path -Parent $root) "tokitoki-cli"
+    if (-not (Test-Path (Join-Path $cliSource "go.mod"))) {
+        throw "tokitoki-cli source not found at $cliSource"
     }
 
-    $candidates = @(
-        "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe",
-        "C:\Program Files\ImageMagick-7.1.2-Q16\magick.exe",
-        "C:\Program Files\ImageMagick-7.1.2-Q8\magick.exe"
-    )
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return $candidate
-        }
+    $version = if ($CliVersion) { $CliVersion } else { $TokitokiCliTag.TrimStart("v") }
+    if ($version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "CLI version must be x.y.z (got '$version'); the app refuses to seed unparsable versions"
     }
 
-    Stop-Build "ImageMagick magick.exe was not found. Install ImageMagick or add magick.exe to PATH."
-}
+    New-Item -ItemType Directory -Force $embedded | Out-Null
+    $staging = Join-Path $embedded ".tokitoki-local.exe"
 
-function Ensure-Icon {
-    $needsGenerate = -not (Test-Path -LiteralPath $IconIco -PathType Leaf)
-    if (-not $needsGenerate) {
-        $iconTime = (Get-Item -LiteralPath $IconIco).LastWriteTimeUtc
-        $sourceTime = (Get-Item -LiteralPath $IconSvg).LastWriteTimeUtc
-        $needsGenerate = $sourceTime -gt $iconTime
-    }
-
-    if ($needsGenerate) {
-        $magick = Find-Magick
-        Invoke-Checked $magick @(
-            "-background", "none",
-            $IconSvg,
-            "-define", "icon:auto-resize=256,128,64,48,32,24,16",
-            $IconIco
-        )
-    }
-}
-
-function Get-ResourcePath {
-    param([string]$TargetArch)
-    Join-Path $Root "cmd/tokitoki-windows/rsrc_windows_$TargetArch.syso"
-}
-
-function Ensure-Resource {
-    param([string]$TargetArch)
-
-    $resource = Get-ResourcePath -TargetArch $TargetArch
-    $needsGenerate = -not (Test-Path -LiteralPath $resource -PathType Leaf)
-
-    if (-not $needsGenerate) {
-        $resourceTime = (Get-Item -LiteralPath $resource).LastWriteTimeUtc
-        foreach ($source in @($Manifest, $ResourcesGo, $IconIco)) {
-            if ((Get-Item -LiteralPath $source).LastWriteTimeUtc -gt $resourceTime) {
-                $needsGenerate = $true
-                break
-            }
-        }
-    }
-
-    if ($needsGenerate) {
-        Invoke-Checked $Go @(
-            "run", "github.com/akavel/rsrc@latest",
-            "-arch", $TargetArch,
-            "-manifest", $Manifest,
-            "-ico", $IconIco,
-            "-o", $resource
-        )
-    }
-}
-
-function Get-LdFlags {
-    param([switch]$Debug)
-
-    $flags = @(
-        "-X", "$VersionPkg.Version=$Version",
-        "-X", "$VersionPkg.Commit=$Commit",
-        "-X", "$VersionPkg.BuildDate=$BuildDate"
-    )
-
-    if (-not $Debug) {
-        $flags = @("-s", "-w", "-H", "windowsgui") + $flags
-    }
-
-    $flags -join " "
-}
-
-function Build-App {
-    param([switch]$Debug)
-
-    # The pinned shared CLI must be in the embed directory before go build:
-    # go:embed bakes whatever is there, and a stale file from a previous
-    # arch's build would seed users a binary that cannot run.
-    Invoke-Checked "pwsh" @(
-        "-NoProfile", "-File", (Join-Path $PSScriptRoot "fetch-cli-release.ps1"),
-        "-Arch", $Arch, "-Go", $Go
-    )
-
-    Ensure-Resource -TargetArch $Arch
-    Ensure-Dist
-
-    $env:GOOS = "windows"
-    $env:GOARCH = $Arch
-    $env:CGO_ENABLED = "0"
-
-    if ($Debug) {
-        $out = Join-Path $DistDir "$App-$Arch-debug.exe"
-    } else {
-        $out = Join-Path $DistDir "$App-$Arch.exe"
-    }
-
-    Invoke-Checked $Go @(
-        "build",
-        "-ldflags", (Get-LdFlags -Debug:$Debug),
-        "-o", $out,
-        $Pkg
-    )
-
-    if (-not $Debug -and $Arch -eq "amd64") {
-        Install-CompatCopy -Source $out
-    }
-}
-
-# The unsuffixed copy is the path the README tells people to run, so it has to
-# end up holding this build. Windows refuses to overwrite it while that copy is
-# running, but it does allow a rename — the same move the app's own updater
-# makes — so the running file steps aside and the fresh build takes its name.
-# Failing instead would leave a stale binary at the documented path.
-function Install-CompatCopy {
-    param([string]$Source)
-
-    $target = Join-Path $DistDir "$App.exe"
-    $stale = "$target.old"
-    Remove-Item -Force -LiteralPath $stale -ErrorAction SilentlyContinue
-
+    Write-Host "build: compiling local CLI $version ($Arch) from $cliSource"
+    $versionVar = "github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo.Version"
+    $env:CGO_ENABLED = "0"; $env:GOOS = "windows"; $env:GOARCH = $Arch
     try {
-        Copy-Item -Force -LiteralPath $Source -Destination $target -ErrorAction Stop
-        return
-    } catch {
-        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-            throw
-        }
+        go build -C $cliSource -trimpath -buildvcs=false `
+            -ldflags "-s -w -X $versionVar=$version" `
+            -o $staging ./cmd/tokitoki
+        if ($LASTEXITCODE -ne 0) { throw "go build failed ($LASTEXITCODE)" }
+    } finally {
+        Remove-Item Env:\CGO_ENABLED, Env:\GOOS, Env:\GOARCH -ErrorAction SilentlyContinue
     }
 
-    Rename-Item -LiteralPath $target -NewName "$App.exe.old" -ErrorAction Stop
-    Copy-Item -Force -LiteralPath $Source -Destination $target
-    Write-Host "note: $App.exe was in use; the running copy is now $App.exe.old"
+    Write-Host "build: bundling CLI payload into embedded/"
+    Compress-GzipFile -Source $staging -Destination $gzPath
+    Write-CliVersionFile -Path $versionPath -Version $version
+    Remove-Item $staging
+
+    Write-Host "build: cargo build --release"
+    Push-Location $root
+    try {
+        & $cargo build --release --locked
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
+    } finally { Pop-Location }
+    Write-Host "build: done -> target/release/tokitoki-windows.exe (embedded CLI $version)"
 }
 
-function Generate-Resources {
-    foreach ($targetArch in @("amd64", "arm64")) {
-        $resource = Get-ResourcePath -TargetArch $targetArch
-        Invoke-Checked $Go @(
-            "run", "github.com/akavel/rsrc@latest",
-            "-arch", $targetArch,
-            "-manifest", $Manifest,
-            "-ico", $IconIco,
-            "-o", $resource
-        )
-    }
-}
-
-Push-Location $Root
-try {
-    switch ($Task) {
-        "build" {
-            Ensure-Icon
-            Build-App
-        }
-        "debug" {
-            Ensure-Icon
-            Build-App -Debug
-        }
-        "test" {
-            Invoke-Checked $Go @("test", "./...")
-        }
-        "generate" {
-            Ensure-Icon
-            Generate-Resources
-        }
-        "clean" {
-            Remove-Item -Recurse -Force -LiteralPath $DistDir -ErrorAction SilentlyContinue
-            $embedDir = Join-Path $Root "internal/agentcli/embedded"
-            Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath @(
-                (Join-Path $embedDir "tokitoki.exe"),
-                (Join-Path $embedDir "tokitoki.exe.gz"),
-                (Join-Path $embedDir "VERSION")
-            )
-        }
-        "size" {
-            Ensure-Icon
-            Build-App
-            Get-Item -LiteralPath (Join-Path $DistDir "$App-$Arch.exe") | Select-Object FullName, Length
-        }
-    }
-} finally {
-    Pop-Location
+switch ($Task) {
+    "build" { Invoke-Build }
+    "clean" { Invoke-Clean }
 }

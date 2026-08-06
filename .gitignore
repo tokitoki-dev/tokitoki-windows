@@ -1,8 +1,8 @@
-dist/
-*.exe
-*.dll
+/target
+/dist
 *.pdb
 
-# Fetched by scripts/fetch-cli-release.ps1 and baked in via go:embed.
-internal/agentcli/embedded/tokitoki.exe.gz
-internal/agentcli/embedded/VERSION
+# Build-time CLI payload (fetched, never committed)
+/embedded/tokitoki.exe
+/embedded/tokitoki.exe.gz
+/embedded/VERSION
