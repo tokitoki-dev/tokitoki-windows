@@ -32,18 +32,26 @@ pub(super) fn apps_use_light_theme() -> bool {
     read_personalize("AppsUseLightTheme").unwrap_or(1) != 0
 }
 
-/// Applies dark/light window chrome: immersive dark title bar plus a Mica
-/// (`DWMSBT_MAINWINDOW`) backdrop. Fails soft on older Windows builds.
-pub(super) fn apply_window_chrome(hwnd: windows::Win32::Foundation::HWND, dark: bool) {
+/// Applies dark/light window chrome: immersive dark title bar, a Mica
+/// (`DWMSBT_MAINWINDOW`) backdrop, and a caption bar tinted to `caption` so
+/// the title bar blends into the window body instead of the stock
+/// white/black strip. Fails soft on older Windows builds.
+pub(super) fn apply_window_chrome(
+    hwnd: windows::Win32::Foundation::HWND,
+    dark: bool,
+    caption: windows::Win32::Foundation::COLORREF,
+) {
     use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
     };
 
     let dark_flag: i32 = dark.into();
     let backdrop: i32 = 2; // DWMSBT_MAINWINDOW (Mica)
+    let caption_value = caption.0;
     let size = u32::try_from(std::mem::size_of::<i32>()).unwrap_or(4);
-    // SAFETY: both attributes take a 4-byte value; failures are ignored on
-    // purpose (attribute unsupported before Win10 1903 / Win11).
+    // SAFETY: all three attributes take a 4-byte value; failures are ignored
+    // on purpose (attributes unsupported before Win10 1903 / Win11).
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -55,6 +63,12 @@ pub(super) fn apply_window_chrome(hwnd: windows::Win32::Foundation::HWND, dark: 
             hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,
             (&raw const backdrop).cast(),
+            size,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            (&raw const caption_value).cast(),
             size,
         );
     }

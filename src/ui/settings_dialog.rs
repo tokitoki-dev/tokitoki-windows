@@ -33,7 +33,7 @@ use windows::{
         UI::{
             Controls::{SetWindowTheme, BST_CHECKED, BST_UNCHECKED},
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi},
-            Input::KeyboardAndMouse::EnableWindow,
+            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
                 GetDlgItem, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
@@ -45,8 +45,8 @@ use windows::{
                 SM_CYSCREEN, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
                 WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
                 WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_NCDESTROY,
-                WM_SETFONT, WM_SETICON, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE,
+                WM_SETFONT, WM_SETICON, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WS_CLIPCHILDREN, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -74,13 +74,23 @@ const EN_KILLFOCUS: u16 = 0x0200;
 const BN_CLICKED: u16 = 0;
 /// `EM_SETCUEBANNER` (`ECM_FIRST + 1`).
 const EM_SETCUEBANNER: u32 = 0x1501;
+/// `EM_SETMARGINS`, with `EC_LEFTMARGIN | EC_RIGHTMARGIN` in wparam.
+const EM_SETMARGINS: u32 = 0x00D3;
+const EC_LEFT_AND_RIGHT_MARGINS: usize = 3;
 
-/// Layout constants in 96-dpi pixels (mirroring the Go dialog's metrics).
+/// Layout constants in 96-dpi pixels.
 const CLIENT_WIDTH: i32 = 460;
-const MARGIN_X: i32 = 20;
-const MARGIN_Y: i32 = 18;
+const MARGIN_X: i32 = 24;
+const MARGIN_Y: i32 = 20;
 const SPACING: i32 = 12;
+/// Vertical breathing room between sections (around separators).
+const SECTION_GAP: i32 = 18;
 const BUTTON_WIDTH: i32 = 170;
+const EDIT_HEIGHT: i32 = 28;
+const BUTTON_HEIGHT: i32 = 30;
+/// Native checkbox glyph square; captions are clipped away visually but
+/// still read by UI Automation (see `toggle_row`).
+const CHECKBOX_SIZE: i32 = 18;
 
 #[derive(Clone, Copy)]
 enum VerifyOutcome {
@@ -182,7 +192,9 @@ pub(super) fn show(ui: &'static Ui) {
             WINDOW_EX_STYLE(0),
             w!("TokitokiSettingsWindow"),
             w!("Settings"),
-            WS_CAPTION | WS_SYSMENU,
+            // WS_CLIPCHILDREN: the background erase must not repaint over
+            // children, or every control flickers on each invalidation.
+            WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
             0,
             0,
             10,
@@ -196,7 +208,9 @@ pub(super) fn show(ui: &'static Ui) {
         };
 
         let dark = !theme::apps_use_light_theme();
-        theme::apply_window_chrome(hwnd, dark);
+        // Tint the caption bar to the body background so the window reads as
+        // one surface instead of "system chrome + gray box".
+        theme::apply_window_chrome(hwnd, dark, Palette::for_theme(dark).background);
         // MAKEINTRESOURCE(2): the app icon compiled in by build.rs.
         if let Ok(icon) = LoadIconW(
             Some(instance.into()),
@@ -211,9 +225,13 @@ pub(super) fn show(ui: &'static Ui) {
         }
 
         let state = build_contents(ui, hwnd, dark, &initial_key);
+        let key_edit = state.key_edit;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(state)) as isize);
 
         let _ = ShowWindow(hwnd, SW_SHOW);
+        // Land keyboard focus in the key box: the dialog's one text input is
+        // the reason most people open it.
+        let _ = SetFocus(Some(key_edit));
 
         let mut msg = MSG::default();
         while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
@@ -250,57 +268,68 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
         } else {
             w!("Explorer")
         };
-        let make =
-            |class: PCWSTR, text: &str, style: u32, id: u16, x: i32, y: i32, w_: i32, h: i32| {
-                let text_wide = wide(text);
-                let control = CreateWindowExW(
-                    WINDOW_EX_STYLE(0),
-                    class,
-                    PCWSTR(text_wide.as_ptr()),
-                    WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
-                    scale(x),
-                    scale(y),
-                    scale(w_),
-                    scale(h),
-                    Some(hwnd),
-                    Some(HMENU(id as usize as *mut core::ffi::c_void)),
-                    None,
-                    None,
-                )
-                .unwrap_or_default();
-                let bold = style & STYLE_BOLD_MARKER != 0;
-                let font_handle = if bold { bold_font } else { font };
-                SendMessageW(
-                    control,
-                    WM_SETFONT,
-                    Some(WPARAM(font_handle.0 as usize)),
-                    Some(LPARAM(1)),
-                );
-                let _ = SetWindowTheme(control, control_theme, PCWSTR::null());
-                control
-            };
+        // `bold` is an explicit parameter, NOT a flag smuggled into `style`:
+        // the high style bits belong to Windows (bit 31 is WS_POPUP, which
+        // silently turns a child control into a top-level window).
+        let make = |class: PCWSTR,
+                    text: &str,
+                    style: u32,
+                    bold: bool,
+                    id: u16,
+                    x: i32,
+                    y: i32,
+                    w_: i32,
+                    h: i32| {
+            let text_wide = wide(text);
+            let control = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class,
+                PCWSTR(text_wide.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
+                scale(x),
+                scale(y),
+                scale(w_),
+                scale(h),
+                Some(hwnd),
+                Some(HMENU(id as usize as *mut core::ffi::c_void)),
+                None,
+                None,
+            )
+            .unwrap_or_default();
+            let font_handle = if bold { bold_font } else { font };
+            SendMessageW(
+                control,
+                WM_SETFONT,
+                Some(WPARAM(font_handle.0 as usize)),
+                Some(LPARAM(1)),
+            );
+            let _ = SetWindowTheme(control, control_theme, PCWSTR::null());
+            control
+        };
 
         // API Key section.
         make(
             w!("STATIC"),
             "API Key",
-            STYLE_BOLD_MARKER,
+            0,
+            true,
             0,
             MARGIN_X,
             y,
             content_width,
-            16,
+            18,
         );
-        y += 22;
+        y += 18 + 6;
         let key_edit = make(
             w!("EDIT"),
             initial_key,
             WS_TABSTOP.0 | WS_BORDER.0 | ES_AUTOHSCROLL as u32,
+            false,
             ID_KEY_EDIT,
             MARGIN_X,
             y,
             content_width,
-            24,
+            EDIT_HEIGHT,
         );
         let cue = wide("Paste your API key");
         SendMessageW(
@@ -309,65 +338,82 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
             Some(WPARAM(1)),
             Some(LPARAM(cue.as_ptr() as isize)),
         );
-        y += 24 + 8;
+        // Inner text padding; without it the text hugs the border.
+        let edit_margin = isize::try_from(scale(6)).unwrap_or(6);
+        SendMessageW(
+            key_edit,
+            EM_SETMARGINS,
+            Some(WPARAM(EC_LEFT_AND_RIGHT_MARGINS)),
+            Some(LPARAM((edit_margin << 16) | edit_margin)),
+        );
+        y += EDIT_HEIGHT + 10;
         let verify_btn = make(
             w!("BUTTON"),
             "Verify Key",
             WS_TABSTOP.0,
+            false,
             ID_VERIFY_BTN,
             MARGIN_X,
             y,
             BUTTON_WIDTH,
-            26,
+            BUTTON_HEIGHT,
         );
         let verify_status = make(
             w!("STATIC"),
             "",
             0,
+            false,
             0,
-            MARGIN_X + BUTTON_WIDTH + 8,
-            y + 5,
-            content_width - BUTTON_WIDTH - 8,
+            MARGIN_X + BUTTON_WIDTH + 10,
+            y + (BUTTON_HEIGHT - 16) / 2,
+            content_width - BUTTON_WIDTH - 10,
             16,
         );
         muted_labels.push(verify_status);
-        y += 26 + SPACING;
+        y += BUTTON_HEIGHT + SECTION_GAP;
 
-        separators.push(make(w!("STATIC"), "", 0, 0, MARGIN_X, y, content_width, 1));
-        y += 1 + SPACING;
+        separators.push(make(w!("STATIC"), "", 0, false, 0, MARGIN_X, y, content_width, 1));
+        y += 1 + SECTION_GAP;
 
         // Toggle rows: bold title, muted description, right-pinned checkbox.
+        // ACCESSIBILITY: the checkbox carries the row title as its caption so
+        // UI Automation / screen readers announce it; the control is sized to
+        // the glyph square, clipping the caption out of the visual layout
+        // (the styled bold title static next to it is what the eye reads).
         let mut toggle_row = |title: &str, description: &str, id: u16, checked: bool| {
             make(
                 w!("STATIC"),
                 title,
-                STYLE_BOLD_MARKER,
+                0,
+                true,
                 0,
                 MARGIN_X,
                 y,
-                content_width - 40,
-                16,
+                content_width - CHECKBOX_SIZE - 24,
+                18,
             );
             let description_label = make(
                 w!("STATIC"),
                 description,
                 0,
+                false,
                 0,
                 MARGIN_X,
-                y + 18,
-                content_width - 40,
+                y + 20,
+                content_width - CHECKBOX_SIZE - 24,
                 16,
             );
             muted_labels.push(description_label);
             let checkbox = make(
                 w!("BUTTON"),
-                "",
+                title,
                 WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32,
+                false,
                 id,
-                CLIENT_WIDTH - MARGIN_X - 16,
-                y + 8,
-                16,
-                16,
+                CLIENT_WIDTH - MARGIN_X - CHECKBOX_SIZE,
+                y + (36 - CHECKBOX_SIZE) / 2,
+                CHECKBOX_SIZE,
+                CHECKBOX_SIZE,
             );
             SendMessageW(
                 checkbox,
@@ -379,7 +425,7 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
                 } as usize)),
                 None,
             );
-            y += 34 + SPACING;
+            y += 36 + SPACING + 4;
         };
         toggle_row(
             "Launch at login",
@@ -398,31 +444,34 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
             w!("BUTTON"),
             "Check for Updates",
             WS_TABSTOP.0,
+            false,
             ID_CHECK_BTN,
             MARGIN_X,
             y,
             BUTTON_WIDTH,
-            26,
+            BUTTON_HEIGHT,
         );
         let update_status = make(
             w!("STATIC"),
             "",
             0,
+            false,
             0,
-            MARGIN_X + BUTTON_WIDTH + 8,
-            y + 5,
-            content_width - BUTTON_WIDTH - 8,
+            MARGIN_X + BUTTON_WIDTH + 10,
+            y + (BUTTON_HEIGHT - 16) / 2,
+            content_width - BUTTON_WIDTH - 10,
             16,
         );
         muted_labels.push(update_status);
-        y += 26 + SPACING;
+        y += BUTTON_HEIGHT + SECTION_GAP;
 
-        separators.push(make(w!("STATIC"), "", 0, 0, MARGIN_X, y, content_width, 1));
-        y += 1 + SPACING;
+        separators.push(make(w!("STATIC"), "", 0, false, 0, MARGIN_X, y, content_width, 1));
+        y += 1 + SECTION_GAP;
         let version_label = make(
             w!("STATIC"),
             &version::summary(),
             0,
+            false,
             0,
             MARGIN_X,
             y,
@@ -457,11 +506,6 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
         }
     }
 }
-
-/// Marker OR-ed into the style argument of `make` to request the bold font;
-/// stripped before it reaches `CreateWindowExW` (bit 31 is unused by the
-/// static/button styles we create).
-const STYLE_BOLD_MARKER: u32 = 0x8000_0000;
 
 unsafe fn size_and_center(hwnd: HWND, dpi: u32, client_width: i32, client_height: i32) {
     // SAFETY: pure Win32 geometry calls on our own window.
