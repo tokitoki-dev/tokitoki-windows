@@ -65,8 +65,9 @@ Lint policy lives in `Cargo.toml` (`clippy::all` = deny, `pedantic` = warn,
 
 - **Marquee install progress**: installs run silently in the background; the
   Go app shows a marquee-progress TaskDialog with Cancel.
-- **arm64 release builds**: add an `aarch64-pc-windows-msvc` job mirroring
-  the Go release workflow.
+- ~~arm64 release builds~~: covered by `.github/workflows/release.yml`
+  (tag `vX.Y.Z` on main → amd64 + arm64 assets with the version stamped and
+  the pinned CLI embedded).
 
 ## Behavior constants (parity with Go)
 

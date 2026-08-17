@@ -8,12 +8,19 @@
 # The bundled CLI is stamped with the pinned release version by default
 # (scripts/cli-release-pins.ps1) so the app's never-downgrade seeding logic
 # sees a comparable version; override with -CliVersion for local experiments.
+#
+# -Version stamps the APP's own version (TOKITOKI_VERSION): without it the
+# binary reports "dev" and refuses self-updates. Release builds must pass it;
+# local builds normally leave it empty on purpose.
 
 [CmdletBinding()]
 param(
     [ValidateSet("build", "clean")] [string]$Task = "build",
     [ValidateSet("amd64", "arm64")] [string]$Arch = "amd64",
-    [string]$CliVersion = ""
+    [string]$CliVersion = "",
+    [string]$Version = "",
+    [string]$Commit = "",
+    [string]$BuildDate = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,10 +79,25 @@ function Invoke-Build {
     Write-Host "build: cargo build --release"
     Push-Location $root
     try {
+        if ($Version) {
+            if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+                throw "app version must be x.y.z (got '$Version')"
+            }
+            $env:TOKITOKI_VERSION = $Version
+            $env:TOKITOKI_COMMIT = if ($Commit) { $Commit } else { "local" }
+            $env:TOKITOKI_BUILD_DATE = if ($BuildDate) { $BuildDate } else {
+                (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            }
+        }
         & $cargo build --release --locked
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
-    } finally { Pop-Location }
-    Write-Host "build: done -> target/release/tokitoki-windows.exe (embedded CLI $version)"
+    } finally {
+        Remove-Item Env:\TOKITOKI_VERSION, Env:\TOKITOKI_COMMIT, Env:\TOKITOKI_BUILD_DATE `
+            -ErrorAction SilentlyContinue
+        Pop-Location
+    }
+    $stamp = if ($Version) { $Version } else { "dev" }
+    Write-Host "build: done -> target/release/tokitoki-windows.exe (app $stamp, embedded CLI $version)"
 }
 
 switch ($Task) {

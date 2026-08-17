@@ -1,6 +1,8 @@
 PS ?= powershell
 ARCH ?= amd64
 CLI_VERSION ?=
+# App version stamp (x.y.z). Empty = dev build (self-update disabled).
+VERSION ?=
 
 .DEFAULT_GOAL := build
 
@@ -10,7 +12,7 @@ CLI_VERSION ?=
 # then `cargo build --release` embeds it. CI uses scripts/fetch-cli-release.ps1
 # (pinned release download) instead of a local CLI build.
 build:
-	$(PS) -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Arch $(ARCH) -CliVersion "$(CLI_VERSION)"
+	$(PS) -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Arch $(ARCH) -CliVersion "$(CLI_VERSION)" -Version "$(VERSION)"
 
 clean:
 	$(PS) -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task clean

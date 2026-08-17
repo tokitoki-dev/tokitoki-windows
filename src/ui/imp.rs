@@ -19,7 +19,8 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
                 DispatchMessageW, GetCursorPos, GetMessageW, PostQuitMessage, RegisterClassW,
-                SetForegroundWindow, TrackPopupMenu, TranslateMessage, MF_CHECKED, MF_SEPARATOR,
+                RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, TranslateMessage,
+                MF_CHECKED, MF_SEPARATOR,
                 MF_STRING, MSG, SW_SHOWNORMAL, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
                 WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE,
                 WNDCLASSW, WS_OVERLAPPED,
@@ -63,6 +64,17 @@ pub(super) struct Ui {
 
 static STATE: OnceLock<Ui> = OnceLock::new();
 
+/// The shell broadcasts `TaskbarCreated` when Explorer (re)starts; the new
+/// taskbar has no record of previously added icons, so we must `NIM_ADD`
+/// again or the app keeps running headless with no way to reach the menu.
+static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+
+fn taskbar_created_message() -> u32 {
+    // SAFETY: registering a well-known broadcast message name; the same name
+    // always maps to the same id within a session.
+    *TASKBAR_CREATED.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) })
+}
+
 impl Ui {
     pub(super) fn hwnd(&self) -> HWND {
         HWND(self.hwnd.load(Ordering::Acquire) as *mut core::ffi::c_void)
@@ -84,6 +96,8 @@ pub fn pending_restart() -> Option<PathBuf> {
 
 pub fn run(app: Arc<App>) -> Result<(), Error> {
     theme::enable_dark_menus();
+    // Register the broadcast id before the first message can arrive.
+    let _ = taskbar_created_message();
 
     let ui = STATE.get_or_init(|| Ui {
         app,
@@ -156,6 +170,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         // SAFETY: default handling for messages arriving before init.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     };
+    // Explorer restarted: re-register the tray icon with the new taskbar.
+    // (Guard against a failed registration returning 0 == WM_NULL.)
+    if msg != 0 && msg == taskbar_created_message() {
+        let light = theme::taskbar_uses_light_theme();
+        ui.taskbar_light.store(light, Ordering::Relaxed);
+        if let Err(err) = tray::add(hwnd, light) {
+            tracing::warn!("re-add tray icon after Explorer restart: {err}");
+        }
+        return LRESULT(0);
+    }
     match msg {
         WM_TRAY_CALLBACK => {
             // The tray callback packs the mouse message into the low word.

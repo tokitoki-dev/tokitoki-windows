@@ -172,6 +172,12 @@ pub(super) fn show(ui: &'static Ui) {
     // SAFETY: window class registration, window/control creation, and the
     // message pump all stay on this thread; State is freed in WM_NCDESTROY.
     unsafe {
+        // For IAccPropServices (accessible names). Already-initialized (or
+        // mode-mismatch) results are fine; the thread still has COM.
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
         let Ok(instance) = GetModuleHandleW(None) else {
             return;
         };
@@ -376,10 +382,9 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
         y += 1 + SECTION_GAP;
 
         // Toggle rows: bold title, muted description, right-pinned checkbox.
-        // ACCESSIBILITY: the checkbox carries the row title as its caption so
-        // UI Automation / screen readers announce it; the control is sized to
-        // the glyph square, clipping the caption out of the visual layout
-        // (the styled bold title static next to it is what the eye reads).
+        // ACCESSIBILITY: the checkbox has NO caption (a caption would paint
+        // text pixels beside the glyph); its UIA/screen-reader name is set
+        // through IAccPropServices instead, so nothing extra is drawn.
         let mut toggle_row = |title: &str, description: &str, id: u16, checked: bool| {
             make(
                 w!("STATIC"),
@@ -406,7 +411,7 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
             muted_labels.push(description_label);
             let checkbox = make(
                 w!("BUTTON"),
-                title,
+                "",
                 WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32,
                 false,
                 id,
@@ -415,6 +420,7 @@ unsafe fn build_contents(ui: &'static Ui, hwnd: HWND, dark: bool, initial_key: &
                 CHECKBOX_SIZE,
                 CHECKBOX_SIZE,
             );
+            set_accessible_name(checkbox, title);
             SendMessageW(
                 checkbox,
                 BM_SETCHECK,
@@ -783,13 +789,23 @@ fn start_update_check(hwnd: HWND, state: &State) {
     }
     let hwnd_value = hwnd.0 as isize;
     let available_version = Arc::clone(&state.available_version);
+    let ui = state.ui;
     thread::spawn(move || {
         let outcome = match app_update::check(&agent_cli::base_url(), version::VERSION) {
             Ok(None) => UpdateOutcome::UpToDate,
             Ok(Some(update)) => {
-                *available_version
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = update.version;
+                update.version.clone_into(
+                    &mut available_version
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                // Hand the find to the tray flow: with the pending update
+                // stored, the context menu gains "Install update X…" and the
+                // announcement balloon offers click-to-install — otherwise a
+                // manual check (the only path when automatic updates are off)
+                // announces a version with no way to install it.
+                *super::imp::lock(&ui.pending_update) = Some(update);
+                post(ui.hwnd().0 as isize, super::imp::WM_UPDATE_AVAILABLE, 0);
                 UpdateOutcome::Available
             }
             Err(app_update::Error::DevBuild) => UpdateOutcome::DevBuild,
@@ -809,6 +825,35 @@ fn post(hwnd_value: isize, msg: u32, code: usize) {
     // was already destroyed the call just fails.
     unsafe {
         let _ = PostMessageW(Some(hwnd), msg, WPARAM(code), LPARAM(0));
+    }
+}
+
+/// Attaches a UIA/MSAA name to a caption-less control via the accessibility
+/// property store: screen readers announce it, but nothing is painted.
+fn set_accessible_name(control: HWND, name: &str) {
+    use windows::Win32::{
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        UI::{
+            Accessibility::{CAccPropServices, IAccPropServices, PROPID_ACC_NAME},
+            WindowsAndMessaging::OBJID_CLIENT,
+        },
+    };
+    // SAFETY: COM is initialized on the dialog thread in `show`; the string
+    // is copied by the property store, so the local buffer may drop after.
+    unsafe {
+        let services: IAccPropServices =
+            match CoCreateInstance(&CAccPropServices, None, CLSCTX_INPROC_SERVER) {
+                Ok(services) => services,
+                Err(_) => return,
+            };
+        let name_wide = wide(name);
+        let _ = services.SetHwndPropStr(
+            control,
+            OBJID_CLIENT.0.cast_unsigned(),
+            0, // CHILDID_SELF
+            PROPID_ACC_NAME,
+            PCWSTR(name_wide.as_ptr()),
+        );
     }
 }
 

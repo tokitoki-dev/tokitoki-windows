@@ -12,7 +12,7 @@ use windows::Win32::{
         HiDpi::GetDpiForWindow,
         Shell::{
             Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING,
-            NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+            NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICONDATAW_0,
         },
         WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, HICON, ICONINFO},
     },
@@ -22,6 +22,12 @@ use super::imp::WM_TRAY_CALLBACK;
 use crate::logo;
 
 const TRAY_ID: u32 = 1;
+/// `NOTIFYICON_VERSION` (3): keeps the classic `WM_LBUTTONUP`/`WM_RBUTTONUP`
+/// callback semantics AND makes the shell deliver balloon events
+/// (`NIN_BALLOONUSERCLICK`). Without `NIM_SETVERSION` the shell stays on
+/// version 0, which never sends balloon clicks — the update balloon would
+/// look clickable but do nothing.
+const NOTIFYICON_VERSION_3: u32 = 3;
 /// The current glyph handle, so a theme flip can destroy the old one.
 static CURRENT_ICON: AtomicIsize = AtomicIsize::new(0);
 
@@ -39,6 +45,14 @@ pub(super) fn add(hwnd: HWND, light_taskbar: bool) -> Result<(), String> {
     // SAFETY: fully initialized NOTIFYICONDATAW for our own window.
     if !unsafe { Shell_NotifyIconW(NIM_ADD, &raw const data) }.as_bool() {
         return Err("Shell_NotifyIconW(NIM_ADD) failed".to_owned());
+    }
+    let mut version_data = base_data(hwnd);
+    version_data.Anonymous = NOTIFYICONDATAW_0 {
+        uVersion: NOTIFYICON_VERSION_3,
+    };
+    // SAFETY: opting the freshly added icon into version-3 callbacks.
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &raw const version_data);
     }
     swap_current(icon);
     Ok(())

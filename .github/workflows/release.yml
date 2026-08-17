@@ -1,0 +1,66 @@
+# Tag vX.Y.Z on main -> build both arches with the pinned CLI embedded and
+# the version stamped, publish arch-suffixed assets. A GitHub release ships
+# nothing to users on its own — rollout happens in /admin/releases, and the
+# server's asset matcher requires the arch token in the file name (which is
+# why no unsuffixed copy is uploaded).
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:GITHUB_REF_NAME is not on main" }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      # TOKITOKI_VERSION is load-bearing: an unstamped binary reports "dev"
+      # and permanently refuses self-updates, so a release without it would
+      # strand every user who installs it.
+      - name: Build amd64
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch amd64
+          $env:TOKITOKI_VERSION = $version
+          $env:TOKITOKI_COMMIT = $env:GITHUB_SHA
+          $env:TOKITOKI_BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          cargo build --release --locked
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\tokitoki-windows.exe dist\tokitoki-windows-amd64.exe
+
+      - name: Build arm64
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch arm64
+          $env:TOKITOKI_VERSION = $version
+          $env:TOKITOKI_COMMIT = $env:GITHUB_SHA
+          $env:TOKITOKI_BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          cargo build --release --locked --target aarch64-pc-windows-msvc
+          Copy-Item target\aarch64-pc-windows-msvc\release\tokitoki-windows.exe dist\tokitoki-windows-arm64.exe
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            dist\tokitoki-windows-amd64.exe `
+            dist\tokitoki-windows-arm64.exe `
+            --title "tokitoki-windows $env:GITHUB_REF_NAME" `
+            --notes "Windows tray app $env:GITHUB_REF_NAME (Rust). Rollout is controlled in /admin/releases."
