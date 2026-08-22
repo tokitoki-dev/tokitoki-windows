@@ -1,8 +1,10 @@
-/target
+/build
 /dist
+*.obj
 *.pdb
+*.ilk
 
-# Build-time CLI payload (fetched, never committed)
+# Build-time CLI payload (fetched or locally built, never committed)
 /embedded/tokitoki.exe
 /embedded/tokitoki.exe.gz
 /embedded/VERSION

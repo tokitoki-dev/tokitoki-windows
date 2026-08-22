@@ -1,77 +1,62 @@
-# tokitoki-windows-rust
+# tokitoki-windows-c
 
-Rust port of [`tokitoki-windows`](../tokitoki-windows) — a native Windows
-system-tray agent that watches local AI-coding-assistant data directories
-(Claude Code, Codex, Copilot, Gemini, and 11 more) and delegates every
-sync/key/update operation to the shared `tokitoki` CLI at
-`%USERPROFILE%\.tokitoki\bin\tokitoki.exe`, the same contract the macOS app
-and editor plugins follow.
+C17 port of the Tokitoki Windows tray agent — feature-for-feature parity with
+the Go original and the Rust rewrite, built on inbox Windows facilities. The
+exe links against system DLLs only (WinHTTP/schannel for TLS, CNG bcrypt for
+SHA-256, comctl32/uxtheme/dwmapi for UI); the one vendored dependency is
+miniz 3.0.2 (`third_party/miniz`, pinned + digest-recorded) for DEFLATE —
+`src/util/inflate.c` layers gzip header/trailer handling with CRC32
+verification on top of it.
 
-## Module map (Go → Rust)
+## Size (measured, amd64 release)
 
-| Go package           | Rust module        | Status |
-|----------------------|--------------------|--------|
-| `internal/agentcli`  | `agent_cli`        | ✅ client, sync args, version pinning, embedded-CLI bootstrap |
-| `internal/apikey`    | `api_key`          | ✅ server-side key verification |
-| `internal/app`       | `app`              | ✅ coordinator, prefs, daily CLI update loop |
-| `internal/appupdate` | `app_update`       | ✅ check, trusted transport, sha256 verify, atomic swap, relaunch |
-| `internal/datadirs`  | `data_dirs`        | ✅ all 15 providers, env overrides, watch-path union |
-| `internal/instance`  | `instance`         | ✅ `Local\TokitokiWindowsTray` named mutex |
-| `internal/launch`    | `launch`           | ✅ HKCU Run key, quote/reconcile semantics |
-| `internal/logo`      | `logo`             | ✅ SDF clock-mark renderer (ring + hand, 3×3 SSAA) |
-| `internal/settings`  | `settings`         | ✅ atomic JSON, inverted flags, legacy-field tolerant |
-| `internal/syncer`    | `syncer`           | ✅ capacity-1 coalescing worker + ticker |
-| `internal/ui`        | `ui`               | ✅ tray, menu, balloons, theme watch, TaskDialogs, updater flow, Settings window (API-key edit + verify, toggles, update check, dark chrome) |
-| `internal/version`   | `version`          | ✅ build-time env injection |
-| `internal/watcher`   | `watcher`          | ✅ recursive debounced watching via `notify` |
+| Implementation | Full exe (with 4.74 MB embedded CLI) | App body |
+|---|---|---|
+| **C** | **5.28 MB** | **≈ 0.54 MB** |
+| Rust | 8.78 MB | ≈ 4.0 MB (2.3 MB with opt-level=z) |
+| Go | 15.02 MB | ≈ 10.4 MB |
+
+C is small because it externalizes TLS, crypto, and Unicode to the OS instead
+of bundling them.
+
+## Layout
+
+| Area | Files | Notes |
+|---|---|---|
+| util | `src/util/` | buf, wstr (UTF-8/16 + char-safe truncate), json (narrow shapes, skips legacy fields), sha256 (CNG), http (WinHTTP), inflate (gzip framing + CRC32 over vendored miniz) |
+| domain | `src/*.c` | version, settings (atomic JSON), data_dirs (15-provider table), agent_cli (hidden-console CLI runner + key verify + resource-payload seeding), app_update (digest-verified atomic swap), syncer (coalescing), watcher (recursive RDCW + debounce), instance, launch, logo (SDF glyph), app (coordinator) |
+| ui | `src/ui/` | tray, theme (cached uxtheme ordinals), task dialogs, full Settings window, updater flow, hidden-window message loop |
+
+Fixes that go beyond the Go/Rust behavior (all found by the Rust release
+review): `TaskbarCreated` re-adds the tray icon after an Explorer restart,
+`NIM_SETVERSION` makes update balloons clickable, a manual update check
+feeds the same pending slot the tray menu installs from, preference writes
+are serialized under one lock, and stderr details truncate on UTF-8
+character boundaries.
 
 ## Build
 
-```powershell
-make            # default: build sibling ../tokitoki-cli from source, gzip it
-                # into embedded/, then cargo build --release (CLI embedded)
-make clean      # cargo clean + remove the bundled CLI payload
-```
-
-`make build` stamps the local CLI with the pinned version from
-`scripts/cli-release-pins.ps1` (override: `make CLI_VERSION=x.y.z`); other
-knobs: `ARCH=arm64`, `PS=pwsh`.
-
-CI instead runs `scripts/fetch-cli-release.ps1`, which downloads the pinned
-release from GitHub, rejects it unless its SHA-256 matches the pin, gzips it
-into `embedded/`, and short-circuits when the payload already matches.
-
-A bare `cargo build` with an empty `embedded/` is a dev build: no seeding,
-no downloads, ever. Release metadata is injected via env vars read by
-`build.rs`:
+MSVC (VS Build Tools / VS 18+). All tasks locate `VsDevCmd.bat` themselves.
 
 ```powershell
-$env:TOKITOKI_VERSION = "0.1.0"; $env:TOKITOKI_COMMIT = "abc123"
-$env:TOKITOKI_BUILD_DATE = "2026-01-01T00:00:00Z"; cargo build --release
+make            # build ../tokitoki-cli, gzip into embedded/, compile release
+make debug      # console-subsystem exe with symbols, no CLI bundling
+make test       # unit tests (util + domain): fixtures in tests/fixtures/
+make clean
 ```
 
-## Checks
+Release flags: `/std:c17 /W4 /WX /permissive- /utf-8 /O1 /GL /MT` with
+`/LTCG /OPT:REF /OPT:ICF`; version injected via `-Version x.y.z` →
+`/DTOKITOKI_VERSION`. The CLI payload embeds as an RCDATA resource; absent
+payload = dev build (no seeding, no downloads, ever).
 
-```powershell
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test
-cargo fmt --check        # import-group options need nightly: cargo +nightly fmt
-```
+CI-style pinned-CLI bundling reuses `scripts/fetch-cli-release.ps1`
+(tag + SHA-256 pins in `scripts/cli-release-pins.ps1`).
 
-Lint policy lives in `Cargo.toml` (`clippy::all` = deny, `pedantic` = warn,
-`unwrap_used`/`expect_used` = deny outside tests via `clippy.toml`).
-
-## Scaffold TODOs
-
-- **Marquee install progress**: installs run silently in the background; the
-  Go app shows a marquee-progress TaskDialog with Cancel.
-- ~~arm64 release builds~~: covered by `.github/workflows/release.yml`
-  (tag `vX.Y.Z` on main → amd64 + arm64 assets with the version stamped and
-  the pinned CLI embedded).
-
-## Behavior constants (parity with Go)
+## Behavior constants (parity)
 
 Data dir `%USERPROFILE%\.tokitoki` · settings `windows-settings.json` ·
-sync every 30 min · watch debounce 2 s · CLI update daily · app update check
-5 s after launch, then daily · sync timeout 2 min · short CLI ops 15 s ·
-base URL `TOKITOKI_BASE_URL` (default `https://tokitoki.dev`).
+mutex `Local\TokitokiWindowsTray` (interops with the Go/Rust builds — verified
+live) · sync every 30 min · watch debounce 2 s · CLI update daily · app
+update check 5 s after launch, then daily · sync timeout 2 min · short CLI
+ops 15 s · base URL `TOKITOKI_BASE_URL` (default `https://tokitoki.dev`).
