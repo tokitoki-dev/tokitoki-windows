@@ -52,8 +52,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Title = bare tag, notes auto-generated from merged PRs — the same
+          # format every previous release uses.
           gh release create $env:GITHUB_REF_NAME `
             dist\tokitoki-windows-amd64.exe `
             dist\tokitoki-windows-arm64.exe `
-            --title "tokitoki-windows $env:GITHUB_REF_NAME" `
-            --notes "Windows tray app $env:GITHUB_REF_NAME (C). Rollout is controlled in /admin/releases."
+            --title $env:GITHUB_REF_NAME `
+            --generate-notes
