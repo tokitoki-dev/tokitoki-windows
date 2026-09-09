@@ -67,10 +67,21 @@ function Invoke-Msvc {
     param([Parameter(Mandatory)] [string]$CommandLine)
     $devCmd = Find-VsDevCmd
     $vsArch = if ($Arch -eq "arm64") { "arm64" } else { "amd64" }
+    # Cross-compiling to arm64 on an x64 host: -host_arch picks the x64-hosted
+    # cl/link, and the PATH prepend picks the x64-hosted SDK tools (rc/mt) —
+    # VsDevCmd puts the TARGET-arch SDK bin dir on PATH, whose arm64 rc.exe
+    # cannot run on an x64 machine. Resources are arch-neutral, so the hosted
+    # rc produces identical output.
+    $arm64Cross = $vsArch -eq "arm64" -and $env:PROCESSOR_ARCHITECTURE -ne "ARM64"
+    $hostArg = if ($arm64Cross) { " -host_arch=amd64" } else { "" }
+    # Delayed expansion (!VAR!) is required: %VAR% would expand when cmd
+    # parses the line — BEFORE VsDevCmd runs — clobbering the dev PATH with
+    # the stale one.
+    $pathFix = if ($arm64Cross) { 'set "PATH=!WindowsSdkVerBinPath!x64;!PATH!" && ' } else { "" }
     # VsDevCmd writes a benign vswhere warning to stderr; capture stdout+stderr
     # without letting the Stop preference promote that write to a terminating
     # error. Merging inside cmd keeps it off PowerShell's error stream.
-    $output = cmd /c "`"$devCmd`" -arch=$vsArch -no_logo 2>&1 && $CommandLine 2>&1"
+    $output = cmd /v:on /c "`"$devCmd`" -arch=$vsArch$hostArg -no_logo 2>&1 && $pathFix$CommandLine 2>&1"
     $output | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "command failed ($LASTEXITCODE): $CommandLine" }
 }
