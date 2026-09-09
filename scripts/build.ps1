@@ -1,237 +1,209 @@
+# Build driver for tokitoki-windows-c (invoked by the Makefile).
+#
+#   build (default): compile ../tokitoki-cli, gzip it into embedded/, then a
+#                    size-optimized release exe (payload embedded via app.rc).
+#   debug:           console-subsystem exe with symbols, no CLI bundling.
+#   test:            compile and run the unit-test exe (core sources + tests).
+#   clean:           remove build output and the CLI payload.
+#
+# MSVC only: locates VsDevCmd.bat, generates a response file, and runs cl/rc
+# inside that environment. Zero third-party libraries — everything links
+# against inbox Windows DLLs.
+
 [CmdletBinding()]
 param(
-    [ValidateSet("build", "debug", "test", "generate", "clean", "size")]
-    [string]$Task = "build",
-
-    [ValidateSet("amd64", "arm64")]
-    [string]$Arch = "amd64",
-
-    [string]$Version = "0.1.0",
-    [string]$Commit = "local",
-    [string]$BuildDate = "unknown",
-    [string]$Go = "go"
+    [ValidateSet("build", "debug", "test", "clean")] [string]$Task = "build",
+    [ValidateSet("amd64", "arm64")] [string]$Arch = "amd64",
+    [string]$CliVersion = "",
+    [string]$Version = "dev",
+    # CI/release bundle the pinned CLI via fetch-cli-release.ps1 first, so the
+    # `build` task must not also rebuild the CLI from ../tokitoki-cli source
+    # (which is absent on the runner). Local `make build` leaves this off and
+    # compiles the sibling CLI as usual.
+    [switch]$SkipCliBundle
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "cli-release-pins.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
-$Root = Split-Path -Parent $PSScriptRoot
-$App = "tokitoki-windows"
-$Pkg = "./cmd/tokitoki-windows"
-$DistDir = Join-Path $Root "dist"
-$Manifest = Join-Path $Root "cmd/tokitoki-windows/tokitoki-windows.exe.manifest"
-$ResourcesGo = Join-Path $Root "cmd/tokitoki-windows/resources.go"
-$IconSvg = Join-Path $Root "assets/app-icon.svg"
-$IconIco = Join-Path $Root "assets/app-icon.ico"
-$VersionPkg = "github.com/tokitoki-dev/tokitoki-windows/internal/version"
+$buildDir = Join-Path $root "build"
+$embedded = Join-Path $root "embedded"
+$gzPath = Join-Path $embedded "tokitoki.exe.gz"
+$versionPath = Join-Path $embedded "VERSION"
 
-function Stop-Build {
-    param(
-        [string]$Message,
-        [int]$Code = 1
-    )
+# Core sources: everything unit-testable (no UI, no wWinMain).
+$coreSources = @(
+    "src\util\wstr.c", "src\util\buf.c", "src\util\json.c", "src\util\inflate.c",
+    "src\util\sha256.c", "src\util\http.c",
+    "src\version.c", "src\settings.c", "src\data_dirs.c", "src\agent_cli.c",
+    "src\app_update.c", "src\syncer.c", "src\watcher.c",
+    "src\instance.c", "src\launch.c", "src\logo.c", "src\app.c"
+)
+$uiSources = @(
+    "src\ui\tray.c", "src\ui\theme.c", "src\ui\task_dialog.c",
+    "src\ui\settings_dialog.c", "src\ui\updater.c", "src\ui\ui.c"
+)
+$testSources = Get-ChildItem (Join-Path $root "tests") -Filter "*.c" |
+    ForEach-Object { "tests\$($_.Name)" }
 
-    [Console]::Error.WriteLine($Message)
-    exit $Code
+$libs = @(
+    "kernel32.lib", "user32.lib", "gdi32.lib", "shell32.lib", "advapi32.lib",
+    "comctl32.lib", "winhttp.lib", "bcrypt.lib", "ole32.lib", "oleaut32.lib",
+    "uxtheme.lib", "dwmapi.lib"
+)
+
+function Find-VsDevCmd {
+    $candidates = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue
+    if (-not $candidates) { throw "VsDevCmd.bat not found; install VS Build Tools" }
+    $candidates[0].FullName
 }
 
-function Invoke-Checked {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments
-    )
-
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Build "$FilePath failed with exit code $LASTEXITCODE" $LASTEXITCODE
-    }
+# Runs one command line inside the VsDevCmd environment. Output is captured
+# and echoed here (not returned) so callers can use a function's return value
+# without the tool's stdout leaking into it.
+function Invoke-Msvc {
+    param([Parameter(Mandatory)] [string]$CommandLine)
+    $devCmd = Find-VsDevCmd
+    $vsArch = if ($Arch -eq "arm64") { "arm64" } else { "amd64" }
+    # VsDevCmd writes a benign vswhere warning to stderr; capture stdout+stderr
+    # without letting the Stop preference promote that write to a terminating
+    # error. Merging inside cmd keeps it off PowerShell's error stream.
+    $output = cmd /c "`"$devCmd`" -arch=$vsArch -no_logo 2>&1 && $CommandLine 2>&1"
+    $output | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "command failed ($LASTEXITCODE): $CommandLine" }
 }
 
-function Ensure-Dist {
-    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-}
-
-function Find-Magick {
-    $command = Get-Command magick -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
-    }
-
-    $candidates = @(
-        "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe",
-        "C:\Program Files\ImageMagick-7.1.2-Q16\magick.exe",
-        "C:\Program Files\ImageMagick-7.1.2-Q8\magick.exe"
-    )
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return $candidate
-        }
-    }
-
-    Stop-Build "ImageMagick magick.exe was not found. Install ImageMagick or add magick.exe to PATH."
-}
-
-function Ensure-Icon {
-    $needsGenerate = -not (Test-Path -LiteralPath $IconIco -PathType Leaf)
-    if (-not $needsGenerate) {
-        $iconTime = (Get-Item -LiteralPath $IconIco).LastWriteTimeUtc
-        $sourceTime = (Get-Item -LiteralPath $IconSvg).LastWriteTimeUtc
-        $needsGenerate = $sourceTime -gt $iconTime
-    }
-
-    if ($needsGenerate) {
-        $magick = Find-Magick
-        Invoke-Checked $magick @(
-            "-background", "none",
-            $IconSvg,
-            "-define", "icon:auto-resize=256,128,64,48,32,24,16",
-            $IconIco
-        )
-    }
-}
-
-function Get-ResourcePath {
-    param([string]$TargetArch)
-    Join-Path $Root "cmd/tokitoki-windows/rsrc_windows_$TargetArch.syso"
-}
-
-function Ensure-Resource {
-    param([string]$TargetArch)
-
-    $resource = Get-ResourcePath -TargetArch $TargetArch
-    $needsGenerate = -not (Test-Path -LiteralPath $resource -PathType Leaf)
-
-    if (-not $needsGenerate) {
-        $resourceTime = (Get-Item -LiteralPath $resource).LastWriteTimeUtc
-        foreach ($source in @($Manifest, $ResourcesGo, $IconIco)) {
-            if ((Get-Item -LiteralPath $source).LastWriteTimeUtc -gt $resourceTime) {
-                $needsGenerate = $true
-                break
-            }
-        }
-    }
-
-    if ($needsGenerate) {
-        Invoke-Checked $Go @(
-            "run", "github.com/akavel/rsrc@latest",
-            "-arch", $TargetArch,
-            "-manifest", $Manifest,
-            "-ico", $IconIco,
-            "-o", $resource
-        )
-    }
-}
-
-function Get-LdFlags {
-    param([switch]$Debug)
-
-    $flags = @(
-        "-X", "$VersionPkg.Version=$Version",
-        "-X", "$VersionPkg.Commit=$Commit",
-        "-X", "$VersionPkg.BuildDate=$BuildDate"
-    )
-
-    if (-not $Debug) {
-        $flags = @("-s", "-w", "-H", "windowsgui") + $flags
-    }
-
-    $flags -join " "
-}
-
-function Build-App {
-    param([switch]$Debug)
-
-    Ensure-Resource -TargetArch $Arch
-    Ensure-Dist
-
-    $env:GOOS = "windows"
-    $env:GOARCH = $Arch
-    $env:CGO_ENABLED = "0"
-
-    if ($Debug) {
-        $out = Join-Path $DistDir "$App-$Arch-debug.exe"
+function Compile-Resources {
+    param([bool]$EmbedCli)
+    $res = Join-Path $buildDir "app.res"
+    $flag = if ($EmbedCli) { "/dEMBED_CLI" } else { "" }
+    # Stamp VERSIONINFO from the same version the C code gets, so the exe's
+    # file properties match version_utf8(). A generated header avoids fragile
+    # comma/quote escaping through rc's /d flag. "dev" -> 0.0.0.0 fields.
+    $header = Join-Path $buildDir "version_res.h"
+    if ($Version -match '^(\d+)\.(\d+)\.(\d+)$') {
+        Set-Content $header -Encoding ascii @"
+#define TOKITOKI_VER_FIELDS $($Matches[1]), $($Matches[2]), $($Matches[3]), 0
+#define TOKITOKI_VERSION_STR "$Version"
+"@
     } else {
-        $out = Join-Path $DistDir "$App-$Arch.exe"
+        Set-Content $header -Encoding ascii @"
+#define TOKITOKI_VER_FIELDS 0, 0, 0, 0
+#define TOKITOKI_VERSION_STR "$Version"
+"@
     }
-
-    Invoke-Checked $Go @(
-        "build",
-        "-ldflags", (Get-LdFlags -Debug:$Debug),
-        "-o", $out,
-        $Pkg
-    )
-
-    if (-not $Debug -and $Arch -eq "amd64") {
-        Install-CompatCopy -Source $out
-    }
+    Invoke-Msvc "rc /nologo $flag /I`"$buildDir`" /fo `"$res`" `"$root\res\app.rc`""
+    $res
 }
 
-# The unsuffixed copy is the path the README tells people to run, so it has to
-# end up holding this build. Windows refuses to overwrite it while that copy is
-# running, but it does allow a rename — the same move the app's own updater
-# makes — so the running file steps aside and the fresh build takes its name.
-# Failing instead would leave a stale binary at the documented path.
-function Install-CompatCopy {
-    param([string]$Source)
+# Writes a cl response file (quoting survives; cmd escaping does not).
+function Write-ResponseFile {
+    param([string]$Path, [string[]]$Lines)
+    Set-Content -Path $Path -Value ($Lines -join "`r`n") -Encoding ascii
+}
 
-    $target = Join-Path $DistDir "$App.exe"
-    $stale = "$target.old"
-    Remove-Item -Force -LiteralPath $stale -ErrorAction SilentlyContinue
+$commonFlags = @(
+    "/nologo", "/std:c17", "/utf-8", "/W4", "/WX", "/permissive-",
+    "/DUNICODE", "/D_UNICODE", "/DWIN32_LEAN_AND_MEAN", "/D_CRT_SECURE_NO_WARNINGS",
+    "/DTOKITOKI_VERSION=\`"$Version\`"",
+    "/I`"$root\src`"", "/I`"$root\res`""
+)
 
+function Invoke-Build {
+    param([bool]$Release)
+
+    New-Item -ItemType Directory -Force $buildDir | Out-Null
+    $embed = (Test-Path $gzPath) -and (Test-Path $versionPath)
+    $res = Compile-Resources -EmbedCli $embed
+
+    $out = Join-Path $buildDir "tokitoki-windows.exe"
+    $objDir = Join-Path $buildDir "obj"
+    New-Item -ItemType Directory -Force $objDir | Out-Null
+
+    $flags = if ($Release) {
+        @("/O1", "/GL", "/MT", "/DNDEBUG")
+    } else {
+        @("/Od", "/Zi", "/MTd", "/DTOKITOKI_DEBUG")
+    }
+    $subsystem = if ($Release) { "/SUBSYSTEM:WINDOWS" } else { "/SUBSYSTEM:CONSOLE /ENTRY:wWinMainCRTStartup /DEBUG" }
+    $ltcg = if ($Release) { "/LTCG /OPT:REF /OPT:ICF" } else { "" }
+
+    # Response files must not contain /link — linker options go on the
+    # command line itself.
+    $sources = ($coreSources + $uiSources + @("src\main.c")) |
+        ForEach-Object { "`"$root\$_`"" }
+    $rsp = Join-Path $buildDir "app.rsp"
+    Write-ResponseFile $rsp ($commonFlags + $flags + $sources + @(
+            "`"$res`"", "/Fo`"$objDir`"\\", "/Fe`"$out`""))
+    Invoke-Msvc "cl @`"$rsp`" /link $subsystem $ltcg $($libs -join ' ')"
+    Write-Host "build: done -> $out"
+}
+
+function Invoke-Test {
+    New-Item -ItemType Directory -Force $buildDir | Out-Null
+    $objDir = Join-Path $buildDir "obj-test"
+    New-Item -ItemType Directory -Force $objDir | Out-Null
+    $out = Join-Path $buildDir "tokitoki-tests.exe"
+
+    $sources = ($coreSources + $testSources) | ForEach-Object { "`"$root\$_`"" }
+    $rsp = Join-Path $buildDir "test.rsp"
+    Write-ResponseFile $rsp ($commonFlags + @("/Od", "/Zi", "/MTd") + $sources + @(
+            "/I`"$root\tests`"", "/Fo`"$objDir`"\\", "/Fe`"$out`""))
+    Invoke-Msvc "cl @`"$rsp`" /link /SUBSYSTEM:CONSOLE /DEBUG $($libs -join ' ')"
+
+    Push-Location $root
     try {
-        Copy-Item -Force -LiteralPath $Source -Destination $target -ErrorAction Stop
-        return
-    } catch {
-        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-            throw
-        }
-    }
-
-    Rename-Item -LiteralPath $target -NewName "$App.exe.old" -ErrorAction Stop
-    Copy-Item -Force -LiteralPath $Source -Destination $target
-    Write-Host "note: $App.exe was in use; the running copy is now $App.exe.old"
+        & $out
+        if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }
+    } finally { Pop-Location }
 }
 
-function Generate-Resources {
-    foreach ($targetArch in @("amd64", "arm64")) {
-        $resource = Get-ResourcePath -TargetArch $targetArch
-        Invoke-Checked $Go @(
-            "run", "github.com/akavel/rsrc@latest",
-            "-arch", $targetArch,
-            "-manifest", $Manifest,
-            "-ico", $IconIco,
-            "-o", $resource
-        )
+function Invoke-BundleLocalCli {
+    $cliSource = Join-Path (Split-Path -Parent $root) "tokitoki-cli"
+    if (-not (Test-Path (Join-Path $cliSource "go.mod"))) {
+        throw "tokitoki-cli source not found at $cliSource"
     }
+    $cliVer = if ($CliVersion) { $CliVersion } else { $TokitokiCliTag.TrimStart("v") }
+    if ($cliVer -notmatch '^\d+\.\d+\.\d+$') {
+        throw "CLI version must be x.y.z (got '$cliVer')"
+    }
+    New-Item -ItemType Directory -Force $embedded | Out-Null
+    $staging = Join-Path $embedded ".tokitoki-local.exe"
+    Write-Host "build: compiling local CLI $cliVer ($Arch) from $cliSource"
+    $versionVar = "github.com/tokitoki-dev/tokitoki-cli/internal/buildinfo.Version"
+    $env:CGO_ENABLED = "0"; $env:GOOS = "windows"; $env:GOARCH = $Arch
+    try {
+        go build -C $cliSource -trimpath -buildvcs=false `
+            -ldflags "-s -w -X $versionVar=$cliVer" `
+            -o $staging ./cmd/tokitoki
+        if ($LASTEXITCODE -ne 0) { throw "go build failed ($LASTEXITCODE)" }
+    } finally {
+        Remove-Item Env:\CGO_ENABLED, Env:\GOOS, Env:\GOARCH -ErrorAction SilentlyContinue
+    }
+    Compress-GzipFile -Source $staging -Destination $gzPath
+    Write-CliVersionFile -Path $versionPath -Version $cliVer
+    Remove-Item $staging
 }
 
-Push-Location $Root
-try {
-    switch ($Task) {
-        "build" {
-            Ensure-Icon
-            Build-App
+switch ($Task) {
+    "build" {
+        if (-not $SkipCliBundle) {
+            Invoke-BundleLocalCli
         }
-        "debug" {
-            Ensure-Icon
-            Build-App -Debug
-        }
-        "test" {
-            Invoke-Checked $Go @("test", "./...")
-        }
-        "generate" {
-            Ensure-Icon
-            Generate-Resources
-        }
-        "clean" {
-            Remove-Item -Recurse -Force -LiteralPath $DistDir -ErrorAction SilentlyContinue
-        }
-        "size" {
-            Ensure-Icon
-            Build-App
-            Get-Item -LiteralPath (Join-Path $DistDir "$App-$Arch.exe") | Select-Object FullName, Length
-        }
+        Invoke-Build -Release $true
     }
-} finally {
-    Pop-Location
+    "debug" {
+        Invoke-Build -Release $false
+    }
+    "test" {
+        Invoke-Test
+    }
+    "clean" {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $buildDir
+        Remove-Item -Force -ErrorAction SilentlyContinue $gzPath, $versionPath,
+            (Join-Path $embedded "tokitoki.exe"), (Join-Path $embedded ".tokitoki-local.exe")
+        Write-Host "clean: done"
+    }
 }

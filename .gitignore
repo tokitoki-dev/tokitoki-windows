@@ -1,9 +1,10 @@
-dist/
-*.exe
-*.dll
+/build
+/dist
+*.obj
 *.pdb
+*.ilk
 
-# Local-only workspace: links agentlib from ../tokitoki-cli source. CI and
-# releases must build against the go.mod pin, so this never gets committed.
-go.work
-go.work.sum
+# Build-time CLI payload (fetched or locally built, never committed)
+/embedded/tokitoki.exe
+/embedded/tokitoki.exe.gz
+/embedded/VERSION

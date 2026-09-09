@@ -1,0 +1,5 @@
+# Byte-exact test fixtures: the inflate tests compare decompressed output
+# against these files verbatim, so line-ending conversion must never touch
+# them (a fresh autocrlf=true checkout — e.g. a CI runner — would otherwise
+# rewrite the .txt fixtures and break the roundtrip comparison).
+tests/fixtures/** -text

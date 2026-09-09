@@ -1,85 +1,59 @@
+# Tag vX.Y.Z on main -> build both arches with the pinned CLI embedded and
+# the version stamped, publish arch-suffixed assets. A GitHub release ships
+# nothing to users on its own — rollout happens in /admin/releases, and the
+# server's asset matcher requires the arch token in the file name (which is
+# why no unsuffixed copy is uploaded).
 name: Release
-
-# Pushing a semver tag (v1.2.0) builds both Windows executables and publishes
-# a GitHub release. Asset names (`tokitoki-windows-<arch>.exe`) carry the
-# platform and arch tokens the server's asset matcher expects. Publishing to
-# users still happens in /admin/releases — a GitHub release alone ships
-# nothing.
-#
-# No secrets are required: the build needs nothing but the module proxy.
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
-  contents: read
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  contents: write
 
 jobs:
   release:
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
-      # agentlib resolves from the module proxy at the version go.mod pins, so
-      # a release links a published library, not whatever a sibling checkout
-      # happened to hold.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify the release tag belongs to main
+      - name: Verify tag is on main
         run: |
-          git fetch origin main --no-tags
-          $commit = git rev-list -n 1 $env:GITHUB_REF_NAME
-          git merge-base --is-ancestor $commit origin/main
-          if ($LASTEXITCODE -ne 0) {
-            throw "Release tags must point to a commit on main"
-          }
+          git fetch origin main
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:GITHUB_REF_NAME is not on main" }
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Test
-        run: pwsh -NoProfile -File scripts/build.ps1 -Task test
-
-      - name: Build both architectures
+      # -Version is load-bearing: an unstamped binary reports "dev" and
+      # permanently refuses self-updates, so a release without it would strand
+      # every user who installs it. -SkipCliBundle because the pinned payload
+      # is fetched here, not built from ../tokitoki-cli (absent on the runner).
+      - name: Build amd64
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v'
-          $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-          foreach ($arch in @("amd64", "arm64")) {
-            pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch `
-              -Version $version -Commit $env:GITHUB_SHA -BuildDate $date
-          }
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch amd64
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Arch amd64 -Version $version -SkipCliBundle
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\tokitoki-windows.exe dist\tokitoki-windows-amd64.exe
 
-      # A cross-compile that silently produced two amd64 binaries would ship an
-      # arm64 asset that cannot run. The build stamp names the real target.
-      - name: Verify each binary is the architecture it claims
+      # A fresh CLI payload per arch: the embedded binary must match the app's
+      # target architecture. clean drops the amd64 payload and build output.
+      - name: Build arm64
         run: |
-          foreach ($arch in @("amd64", "arm64")) {
-            $exe = "dist/tokitoki-windows-$arch.exe"
-            $info = (go version -m $exe) -join "`n"
-            if ($info -notmatch "GOARCH=$arch") {
-              throw "$exe is not $arch"
-            }
-            "$exe : $arch confirmed"
-          }
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task clean
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch arm64
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Arch arm64 -Version $version -SkipCliBundle
+          Copy-Item build\tokitoki-windows.exe dist\tokitoki-windows-arm64.exe
 
-      # Only the two arch-tagged assets are published. `build.ps1` also leaves
-      # an unsuffixed `tokitoki-windows.exe` copy for local use, and uploading
-      # it would offer the server's asset matcher a file with no arch token.
-      - name: Publish GitHub release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create $env:GITHUB_REF_NAME `
-            dist/tokitoki-windows-amd64.exe `
-            dist/tokitoki-windows-arm64.exe `
-            --repo $env:GITHUB_REPOSITORY `
-            --title $env:GITHUB_REF_NAME `
-            --generate-notes
+            dist\tokitoki-windows-amd64.exe `
+            dist\tokitoki-windows-arm64.exe `
+            --title "tokitoki-windows $env:GITHUB_REF_NAME" `
+            --notes "Windows tray app $env:GITHUB_REF_NAME (C). Rollout is controlled in /admin/releases."

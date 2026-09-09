@@ -1,153 +1,62 @@
-# Tokitoki Windows
+# tokitoki-windows-c
 
-A native Windows tray app for Tokitoki. The app is a small Go executable that
-uses the shared `github.com/tokitoki-dev/tokitoki-cli/pkg/agentlib` package for local
-AI usage scanning and upload.
+C17 port of the Tokitoki Windows tray agent — feature-for-feature parity with
+the Go original and the Rust rewrite, built on inbox Windows facilities. The
+exe links against system DLLs only (WinHTTP/schannel for TLS, CNG bcrypt for
+SHA-256, comctl32/uxtheme/dwmapi for UI); the one vendored dependency is
+miniz 3.0.2 (`third_party/miniz`, pinned + digest-recorded) for DEFLATE —
+`src/util/inflate.c` layers gzip header/trailer handling with CRC32
+verification on top of it.
 
-## Architecture
+## Size (measured, amd64 release)
 
-```text
-tokitoki-windows.exe
-  ├─ native Windows tray and settings UI
-  ├─ launch-at-login registry integration
-  ├─ recursive Claude Code / Codex directory watcher
-  ├─ periodic sync scheduler
-  └─ agentlib sync engine from the tokitoki-cli module
-```
+| Implementation | Full exe (with 4.74 MB embedded CLI) | App body |
+|---|---|---|
+| **C** | **5.28 MB** | **≈ 0.54 MB** |
+| Rust | 8.78 MB | ≈ 4.0 MB (2.3 MB with opt-level=z) |
+| Go | 15.02 MB | ≈ 10.4 MB |
 
-The Windows client does not bundle or spawn a separate agent process. It builds
-one executable and shares the same `~/.tokitoki` state as the CLI.
+C is small because it externalizes TLS, crypto, and Unicode to the OS instead
+of bundling them.
 
-All server access uses `TOKITOKI_BASE_URL` and defaults to
-`https://tokitoki.dev`. Override it before starting the app when testing a
-local or staging server:
+## Layout
 
-```powershell
-$env:TOKITOKI_BASE_URL = "http://localhost:9093"
-.\tokitoki-windows.exe
-```
+| Area | Files | Notes |
+|---|---|---|
+| util | `src/util/` | buf, wstr (UTF-8/16 + char-safe truncate), json (narrow shapes, skips legacy fields), sha256 (CNG), http (WinHTTP), inflate (gzip framing + CRC32 over vendored miniz) |
+| domain | `src/*.c` | version, settings (atomic JSON), data_dirs (15-provider table), agent_cli (hidden-console CLI runner + key verify + resource-payload seeding), app_update (digest-verified atomic swap), syncer (coalescing), watcher (recursive RDCW + debounce), instance, launch, logo (SDF glyph), app (coordinator) |
+| ui | `src/ui/` | tray, theme (cached uxtheme ordinals), task dialogs, full Settings window, updater flow, hidden-window message loop |
 
-## The agent library
-
-`agentlib` comes from the published `github.com/tokitoki-dev/tokitoki-cli`
-module at the version `go.mod` pins. CI and the release workflow build exactly
-that: they check out this repo alone and resolve the pin from the module proxy,
-so a release always links published, tagged library code.
-
-Local development instead builds from the sibling `../tokitoki-cli` source
-checkout, through a gitignored `go.work` in this directory:
-
-```text
-go 1.25.0
-
-use (
-	.
-	../tokitoki-cli
-)
-```
-
-With that file present, every `go build` / `go test` here links the sibling
-source, so app and CLI changes can be developed together without cutting a CLI
-release. Because `go.work` never gets committed, it cannot leak into CI. To
-reproduce the exact release build locally, disable the workspace:
-
-```sh
-GOWORK=off go build ./...
-```
-
-To move a release to a newer CLI, tag it in `tokitoki-cli` first, then bump the
-pin here:
-
-```sh
-GOWORK=off go get github.com/tokitoki-dev/tokitoki-cli@v0.1.4
-GOWORK=off go mod tidy
-```
+Fixes that go beyond the Go/Rust behavior (all found by the Rust release
+review): `TaskbarCreated` re-adds the tray icon after an Explorer restart,
+`NIM_SETVERSION` makes update balloons clickable, a manual update check
+feeds the same pending slot the tray menu installs from, preference writes
+are serialized under one lock, and stderr details truncate on UTF-8
+character boundaries.
 
 ## Build
 
-```sh
-make build
+MSVC (VS Build Tools / VS 18+). All tasks locate `VsDevCmd.bat` themselves.
+
+```powershell
+make            # build ../tokitoki-cli, gzip into embedded/, compile release
+make debug      # console-subsystem exe with symbols, no CLI bundling
+make test       # unit tests (util + domain): fixtures in tests/fixtures/
+make clean
 ```
 
-The release executable is written to:
+Release flags: `/std:c17 /W4 /WX /permissive- /utf-8 /O1 /GL /MT` with
+`/LTCG /OPT:REF /OPT:ICF`; version injected via `-Version x.y.z` →
+`/DTOKITOKI_VERSION`. The CLI payload embeds as an RCDATA resource; absent
+payload = dev build (no seeding, no downloads, ever).
 
-```text
-dist/tokitoki-windows-amd64.exe
-```
+CI-style pinned-CLI bundling reuses `scripts/fetch-cli-release.ps1`
+(tag + SHA-256 pins in `scripts/cli-release-pins.ps1`).
 
-For compatibility, the default amd64 build also writes:
+## Behavior constants (parity)
 
-```text
-dist/tokitoki-windows.exe
-```
-
-`make` without a target also runs `make build`.
-
-Build Windows on ARM:
-
-```sh
-make build-arm64
-```
-
-That writes:
-
-```text
-dist/tokitoki-windows-arm64.exe
-```
-
-Build both release architectures:
-
-```sh
-make build-all
-```
-
-Set release metadata:
-
-```sh
-make build-all VERSION=1.0.0 COMMIT=$(git rev-parse --short HEAD)
-```
-
-Development builds keep a console for diagnostics:
-
-```sh
-make debug
-```
-
-If the manifest resource needs to be regenerated:
-
-```sh
-make generate
-```
-
-## Release
-
-Releases are cut by tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`,
-which tests, builds both architectures, checks each binary really is the
-architecture it claims, and publishes a GitHub release carrying:
-
-```text
-tokitoki-windows-amd64.exe
-tokitoki-windows-arm64.exe
-```
-
-Those names are what the server's asset matcher reads, so it can hand each
-machine the right build. The unsuffixed `dist/tokitoki-windows.exe` produced by
-local builds is deliberately not published.
-
-The tag must point at a commit on `main` — the workflow refuses otherwise — so
-merge first, then:
-
-```sh
-git switch main
-git merge --ff-only dev
-git push origin main
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-A published GitHub release does not ship anything to users on its own; rolling
-it out still happens in `/admin/releases`.
-
-## License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Data dir `%USERPROFILE%\.tokitoki` · settings `windows-settings.json` ·
+mutex `Local\TokitokiWindowsTray` (interops with the Go/Rust builds — verified
+live) · sync every 30 min · watch debounce 2 s · CLI update daily · app
+update check 5 s after launch, then daily · sync timeout 2 min · short CLI
+ops 15 s · base URL `TOKITOKI_BASE_URL` (default `https://tokitoki.dev`).

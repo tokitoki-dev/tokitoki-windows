@@ -1,8 +1,7 @@
+# Windows runners bill double, so CI runs only on main pushes and PRs to main
+# (mirrors the Go project's policy).
 name: CI
 
-# Only main and the pull requests targeting it. Work branches push often and
-# a Windows runner bills at double rate, so they are checked when they are
-# proposed for merge, not on every commit.
 on:
   push:
     branches: [main]
@@ -10,30 +9,30 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: windows-latest
     steps:
-      # agentlib now resolves from the module proxy like any other dependency,
-      # so this repo builds on its own — no sibling checkout required.
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
 
+      # Bundle the pinned CLI release BEFORE the release build so it embeds the
+      # payload. The pin (tag + sha256) lives in scripts/cli-release-pins.ps1;
+      # the download is rejected on digest mismatch.
+      - name: Bundle pinned CLI
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-cli-release.ps1 -Arch amd64
+
+      # Unit tests (util + domain) build with /W4 /WX, so a warning fails CI.
       - name: Test
-        run: pwsh -NoProfile -File scripts/build.ps1 -Task test
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task test
 
-      # Both release architectures are compiled here, not just the host one:
-      # arm64 ships to users, so a break in it must fail CI, not the release.
-      - name: Build both release architectures
-        run: |
-          foreach ($arch in @("amd64", "arm64")) {
-            pwsh -NoProfile -File scripts/build.ps1 -Task build -Arch $arch
-          }
+      # Release build with the embedded CLI, mirroring what Release ships.
+      # -SkipCliBundle: the pinned payload is already in embedded/ from the
+      # step above; there is no ../tokitoki-cli source on the runner.
+      - name: Build (release)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Version ci -SkipCliBundle
