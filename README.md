@@ -1,40 +1,75 @@
-# tokitoki-windows-c
+# Tokitoki for Windows
 
-C17 port of the Tokitoki Windows tray agent — feature-for-feature parity with
-the Go original and the Rust rewrite, built on inbox Windows facilities. The
-exe links against system DLLs only (WinHTTP/schannel for TLS, CNG bcrypt for
-SHA-256, comctl32/uxtheme/dwmapi for UI); the one vendored dependency is
-miniz 3.0.2 (`third_party/miniz`, pinned + digest-recorded) for DEFLATE —
-`src/util/inflate.c` layers gzip header/trailer handling with CRC32
-verification on top of it.
+Tray app that syncs the token usage and cost of your local AI coding agents
+to your [Tokitoki](https://tokitoki.dev) dashboard: Claude Code, Codex,
+GitHub Copilot, Gemini CLI and
+[a dozen more](https://github.com/tokitoki-dev/tokitoki-cli#supported-tools).
+Every AI session shows up next to your coding time, grouped by project, so
+you can see what a feature actually cost.
 
-## Size (measured, amd64 release)
+One exe. The app itself is half a megabyte of C17 with no installer, no
+runtime and no framework; it links against the DLLs already in Windows.
 
-| Implementation | Full exe (with 4.74 MB embedded CLI) | App body |
+## Install
+
+1. Download `tokitoki-windows-amd64.exe` (or `arm64`) from the
+   [latest release](https://github.com/tokitoki-dev/tokitoki-windows/releases/latest)
+   and put it wherever you keep your tools.
+2. Run it. Tokitoki appears in the tray.
+3. Open **Settings** from the tray icon, paste the API key from
+   [tokitoki.dev/settings](https://tokitoki.dev/settings), and turn on
+   **Launch at login**.
+
+The exe is not code-signed yet, so SmartScreen may ask once. Releases after
+v0.2.0 ship a `checksums.txt` next to the binaries; compare before you click
+through:
+
+```powershell
+Get-FileHash tokitoki-windows-amd64.exe -Algorithm SHA256
+```
+
+## What it does
+
+- Syncs on launch, every 30 minutes, and two seconds after your agents write
+  new session data. It watches their data folders, so a Claude Code session
+  is on the dashboard before you get back to it.
+- Settings: API key with a **Verify Key** check, launch at login, automatic
+  updates with a manual **Check for Updates**.
+- Updates download in the background, are verified by SHA-256 and swapped in
+  atomically.
+- Bundles [tokitoki-cli](https://github.com/tokitoki-dev/tokitoki-cli) and
+  keeps a shared copy under `%USERPROFILE%\.tokitoki` that the VS Code
+  extension and other Tokitoki clients reuse. Nothing runs between syncs.
+- Survives an Explorer restart: the tray icon comes back on its own.
+
+## Why C
+
+The same agent exists in Go and Rust. Measured amd64 release builds, each
+embedding the same 4.74 MB CLI:
+
+| Implementation | Full exe | App body |
 |---|---|---|
 | **C** | **5.28 MB** | **≈ 0.54 MB** |
 | Rust | 8.78 MB | ≈ 4.0 MB (2.3 MB with opt-level=z) |
 | Go | 15.02 MB | ≈ 10.4 MB |
 
-C is small because it externalizes TLS, crypto, and Unicode to the OS instead
-of bundling them.
+C is small because it externalizes TLS, crypto and Unicode to the OS instead
+of bundling them. The only vendored dependency is miniz for gzip.
 
-## Layout
+## Privacy
 
-| Area | Files | Notes |
-|---|---|---|
-| util | `src/util/` | buf, wstr (UTF-8/16 + char-safe truncate), json (narrow shapes, skips legacy fields), sha256 (CNG), http (WinHTTP), inflate (gzip framing + CRC32 over vendored miniz) |
-| domain | `src/*.c` | version, settings (atomic JSON), data_dirs (15-provider table), agent_cli (hidden-console CLI runner + key verify + resource-payload seeding), app_update (digest-verified atomic swap), syncer (coalescing), watcher (recursive RDCW + debounce), instance, launch, logo (SDF glyph), app (coordinator) |
-| ui | `src/ui/` | tray, theme (cached uxtheme ordinals), task dialogs, full Settings window, updater flow, hidden-window message loop |
+The app reads token counts, model names and timestamps from your agents'
+local data and uploads that metadata over HTTPS with your API key. Never
+your code. Delete your data anytime from the dashboard.
 
-Fixes that go beyond the Go/Rust behavior (all found by the Rust release
-review): `TaskbarCreated` re-adds the tray icon after an Explorer restart,
-`NIM_SETVERSION` makes update balloons clickable, a manual update check
-feeds the same pending slot the tray menu installs from, preference writes
-are serialized under one lock, and stderr details truncate on UTF-8
-character boundaries.
+## Other clients
 
-## Build
+[VS Code](https://github.com/tokitoki-dev/tokitoki-vscode) ·
+[macOS](https://github.com/tokitoki-dev/tokitoki-macos) ·
+[CLI](https://github.com/tokitoki-dev/tokitoki-cli) for servers and scripts.
+The overview lives at [github.com/tokitoki-dev](https://github.com/tokitoki-dev).
+
+## Development
 
 MSVC (VS Build Tools / VS 18+). All tasks locate `VsDevCmd.bat` themselves.
 
@@ -45,18 +80,10 @@ make test       # unit tests (util + domain): fixtures in tests/fixtures/
 make clean
 ```
 
-Release flags: `/std:c17 /W4 /WX /permissive- /utf-8 /O1 /GL /MT` with
-`/LTCG /OPT:REF /OPT:ICF`; version injected via `-Version x.y.z` →
-`/DTOKITOKI_VERSION`. The CLI payload embeds as an RCDATA resource; absent
-payload = dev build (no seeding, no downloads, ever).
+Work on `dev`; releases are tagged from `main`. Source layout, release
+flags, CLI bundling and the behavior constants shared with the Go and Rust
+builds are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-CI-style pinned-CLI bundling reuses `scripts/fetch-cli-release.ps1`
-(tag + SHA-256 pins in `scripts/cli-release-pins.ps1`).
+## License
 
-## Behavior constants (parity)
-
-Data dir `%USERPROFILE%\.tokitoki` · settings `windows-settings.json` ·
-mutex `Local\TokitokiWindowsTray` (interops with the Go/Rust builds — verified
-live) · sync every 30 min · watch debounce 2 s · CLI update daily · app
-update check 5 s after launch, then daily · sync timeout 2 min · short CLI
-ops 15 s · base URL `TOKITOKI_BASE_URL` (default `https://tokitoki.dev`).
+[Apache License 2.0](LICENSE)

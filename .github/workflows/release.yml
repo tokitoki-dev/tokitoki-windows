@@ -48,6 +48,16 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Task build -Arch arm64 -Version $version -SkipCliBundle
           Copy-Item build\tokitoki-windows.exe dist\tokitoki-windows-arm64.exe
 
+      # Same sha256sum format tokitoki-cli publishes; the exe is not
+      # code-signed, so this is what users compare against SmartScreen.
+      - name: Generate checksums
+        run: |
+          Set-Location dist
+          Get-FileHash -Algorithm SHA256 tokitoki-windows-*.exe |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding ascii checksums.txt
+          Get-Content checksums.txt
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,5 +67,6 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             dist\tokitoki-windows-amd64.exe `
             dist\tokitoki-windows-arm64.exe `
+            dist\checksums.txt `
             --title $env:GITHUB_REF_NAME `
             --generate-notes
